@@ -1,23 +1,26 @@
 pkgname=tslib
-pkgver=1.12
+pkgver=1.13-rc0
 pkgrel=0
 pkgdesc="Touchscreen Access Library"
 arch="all"
 url="https://github.com/kergoth/tslib"
 license="GPL2"
 makedepends="autoconf automake libtool linux-headers"
-source="https://github.com/kergoth/tslib/releases/download/$pkgver/$pkgname-$pkgver.tar.xz"
+#source="${pkgname}-${pkgver}-${pkgrel}.tar.gz::https://github.com/kergoth/tslib/releases/download/$pkgver/$pkgname-$pkgver.tar.xz"
+
+source="${pkgname}-${pkgver}-${pkgrel}.tar.gz::https://github.com/kergoth/tslib/archive/master.tar.gz"
 subpackages="$pkgname-dev $pkgname-doc"
 
 build() {
-    cd $srcdir/$pkgname-$pkgver
+    cd $srcdir/$pkgname-master
+    #cd $srcdir/$pkgname-$pkgver
     ./autogen.sh
     ./configure --prefix=/usr --sysconfdir=/etc
     make
 }
 
 package() {
-    cd $srcdir/$pkgname-$pkgver
+    cd $srcdir/$pkgname-master
     make DESTDIR="$pkgdir" install
 }
-sha512sums="417315496ab668ed82a84487986580cc9bd69288c3344e38cb12578ede90a3d16c9ab84362b2b12ebdc70847a0a380249f434210b6c28bda2b1f6685ab96acf8  tslib-1.12.tar.xz"
+sha512sums="9216f223d9d871977552223617a2456f438ef7e27ebafdb4e1b5944f01d8c458baa524ccaa357a76176c02c150511c225ccc799c4b00bfc741ed6e5f9d64d4be  tslib-1.13-rc0-0.tar.gz"
