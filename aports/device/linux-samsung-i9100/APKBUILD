@@ -24,7 +24,7 @@ case $pkgver in
 	*.*.*)  _kernver=${pkgver%.*};;
 	*.*) _kernver=$pkgver;;
 esac
-pkgrel=7
+pkgrel=8
 arch="armhf"
 pkgdesc="Samsung Galaxy SII kernel from LineageOS"
 url="https://github.com/LineageOS/android_kernel_samsung_smdk4412"
