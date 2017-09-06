@@ -1,0 +1,26 @@
+pkgname=libsamsung-ipc
+pkgver=0.2.0
+pkgrel=0
+pkgdesc="Implementation of Samsung modem protocol"
+url="https://github.com/morphis/libsamsung-ipc"
+arch="all"
+license="GPLv2"
+depends=""
+makedepends="autoconf automake libtool openssl-dev"
+subpackages=""
+source="$pkgname-$pkgver.tar.gz::https://github.com/morphis/libsamsung-ipc/archive/${pkgver}.tar.gz"
+options="!check"
+
+builddir="$srcdir"/libsamsung-ipc-$pkgver
+build() {
+	cd "$builddir"
+	./autogen.sh CFLAGS=-Dloff_t=off_t --prefix=/usr --sysconfdir=/etc
+	make
+}
+
+package() {
+	cd "$builddir"
+	make DESTDIR="$pkgdir" install
+}
+
+sha512sums="4f08cbaa7ff5f043feb4b13c491851b6f47c8777aff9a3b613b40e80d669956a021ef4ca208652403bf1e56b5857195b60cdb79e831dfb67a4e16c73790f41f0  libsamsung-ipc-0.2.0.tar.gz"
