@@ -20,7 +20,7 @@ depends=""
 makedepends=""
 install=""
 subpackages=""
-for _i in $_files; do source="$source https://github.com/TheMuppets/proprietary_vendor_samsung/tree/cm-14.1/i9100/proprietary/system/etc/wifi/$_i"; done
+for _i in $_files; do source="$source https://github.com/TheMuppets/proprietary_vendor_samsung/raw/cm-14.1/i9100/proprietary/system/etc/wifi/$_i"; done
 options="!check"
 
 package() {
