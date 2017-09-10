@@ -121,7 +121,7 @@ def init(args):
                  " or \"none\"")
     cfg["pmbootstrap"]["extra_packages"] = pmb.helpers.cli.ask(args, "Extra packages",
                                                                None, args.extra_packages,
-                                                               validation_regex="^(|[-\w\s]+(?:,[-\w\s]*)*)$")
+                                                               validation_regex="^(|[-.+\w\s]+(?:,[-.+\w\s]*)*)$")
 
     # Do not save aports location to config file
     del cfg["pmbootstrap"]["aports"]
@@ -129,6 +129,8 @@ def init(args):
     # Save config
     pmb.config.save(args, cfg)
 
+    # Zap existing chroots
+    setattr(args, "work", cfg["pmbootstrap"]["work"])
     if (device_exists and
             len(glob.glob(args.work + "/chroot_*")) and
             pmb.helpers.cli.confirm(args, "Zap existing chroots to apply configuration?", default=True)):
