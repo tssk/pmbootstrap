@@ -1,0 +1,3570 @@
+diff --git a/Makefile.am b/Makefile.am
+index 5368b61d..32c51bc3 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -240,6 +240,23 @@ builtin_modules += gobi
+ builtin_sources += plugins/gobi.c
+ endif
+ 
++if SAMSUNGIPCMODEM
++builtin_modules += samsungipcmodem
++builtin_sources += \
++	drivers/samsungipcmodem/samsungipcmodem.c \
++	drivers/samsungipcmodem/samsungipcmodem.h \
++	drivers/samsungipcmodem/ipc.c \
++	drivers/samsungipcmodem/ipc.h \
++	drivers/samsungipcmodem/devinfo.c \
++	drivers/samsungipcmodem/sim.c \
++	drivers/samsungipcmodem/network-registration.c \
++	drivers/samsungipcmodem/voicecall.c \
++	drivers/samsungipcmodem/gprs.c \
++	drivers/samsungipcmodem/gprs-context.c
++builtin_cflags += @SAMSUNGIPC_CFLAGS@
++builtin_libadd += @SAMSUNGIPC_LIBS@
++endif
++
+ if ATMODEM
+ builtin_modules += atmodem
+ builtin_sources += 	drivers/atmodem/atmodem.h \
+@@ -460,6 +477,14 @@ builtin_sources += plugins/ste.c
+ builtin_modules += stemgr
+ builtin_sources += plugins/stemgr.c
+ 
++if SAMSUNGIPCMODEM
++builtin_modules += samsungmgr
++builtin_sources += plugins/samsungmgr.c
++
++builtin_modules += samsungipc
++builtin_sources += plugins/samsungipc.c
++endif
++
+ builtin_modules += caif
+ builtin_sources += plugins/caif.c
+ 
+diff --git a/configure.ac b/configure.ac
+index 29a01c21..5fb36ce2 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -171,6 +171,17 @@ AC_ARG_ENABLE(qmimodem, AC_HELP_STRING([--disable-qmimodem],
+ 					[enable_qmimodem=${enableval}])
+ AM_CONDITIONAL(QMIMODEM, test "${enable_qmimodem}" != "no")
+ 
++AC_ARG_ENABLE(samsungipc, AC_HELP_STRING([--disable-samsungipcmodem],
++				[disable Samsung IPC modem support]),
++					[enable_samsungipc=${enableval}])
++if (test "${enable_samsungipc}" != "no"); then
++	PKG_CHECK_MODULES(SAMSUNGIPC, samsung-ipc-1.0 >= 0.2, dummy=yes,
++			AC_MSG_ERROR(Samsung IPC library >= 0.2 is required))
++fi
++AC_SUBST(SAMSUNGIPC_CFLAGS)
++AC_SUBST(SAMSUNGIPC_LIBS)
++AM_CONDITIONAL(SAMSUNGIPCMODEM, test "${enable_samsungipc}" != "no")
++
+ AC_ARG_ENABLE(bluetooth, AC_HELP_STRING([--disable-bluetooth],
+ 				[disable BlueZ 4 and BlueZ 5 plugins support]),
+ 					[enable_bluetooth=${enableval}])
+diff --git a/drivers/samsungipcmodem/devinfo.c b/drivers/samsungipcmodem/devinfo.c
+new file mode 100644
+index 00000000..c338b1ac
+--- /dev/null
++++ b/drivers/samsungipcmodem/devinfo.c
+@@ -0,0 +1,214 @@
++/*
++ *
++ *  oFono - Open Source Telephony
++ *
++ *  Copyright (C) 2012 Simon Busch <morphis at gravedo.de>. All rights reserved.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License version 2 as
++ *  published by the Free Software Foundation.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ */
++
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
++#include <string.h>
++
++#include <ofono/log.h>
++#include <ofono/modem.h>
++#include <ofono/devinfo.h>
++
++#include <glib.h>
++
++#include "samsungipcmodem.h"
++#include "ipc.h"
++#include "util.h"
++
++struct devinfo_data {
++	struct ipc_device *device;
++};
++
++static void samsungipc_query_manufacturer(struct ofono_devinfo *devinfo,
++				ofono_devinfo_query_cb_t cb, void *user_data)
++{
++	struct cb_data *cbd = cb_data_new(cb, user_data);
++
++	CALLBACK_WITH_FAILURE(cb, NULL, cbd->data);
++
++	g_free(cbd);
++}
++
++static void samsungipc_query_model(struct ofono_devinfo *devinfo,
++				ofono_devinfo_query_cb_t cb, void *user_data)
++{
++	struct cb_data *cbd = cb_data_new(cb, user_data);
++
++	CALLBACK_WITH_FAILURE(cb, NULL, cbd->data);
++
++	g_free(cbd);
++}
++
++static void misc_me_version_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_devinfo_query_cb_t cb = cbd->cb;
++	struct ipc_misc_me_version *version = data;
++	char *str;
++
++	if (error) {
++		CALLBACK_WITH_FAILURE(cb, NULL, cbd->data);
++		return;
++	}
++
++	str = g_try_new0(char, 32);
++	if (!str) {
++		CALLBACK_WITH_FAILURE(cb, NULL, cbd->data);
++		return;
++	}
++
++	strncpy(str, version->sw_version, 32);
++	str[32] = '\0';
++
++	CALLBACK_WITH_SUCCESS(cb, str, cbd->data);
++}
++
++static void samsungipc_query_revision(struct ofono_devinfo *devinfo,
++				ofono_devinfo_query_cb_t cb, void *user_data)
++{
++	struct devinfo_data *data = ofono_devinfo_get_data(devinfo);
++	struct cb_data *cbd = cb_data_new(cb, user_data);
++	uint8_t *msg;
++
++	msg = g_try_new0(uint8_t, 1);
++	msg[0] = 0xff;
++
++	if(ipc_device_enqueue_message(data->device, IPC_MISC_ME_VERSION, IPC_TYPE_GET,
++						msg, 1, misc_me_version_cb, cbd) > 0)
++		return;
++
++	g_free(cbd);
++
++	CALLBACK_WITH_FAILURE(cb, NULL, data);
++}
++
++static void misc_me_sn_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_devinfo_query_cb_t cb = cbd->cb;
++	struct ipc_misc_me_sn *sn = data;
++	char *str;
++
++	if (error) {
++		CALLBACK_WITH_FAILURE(cb, NULL, cbd->data);
++		return;
++	}
++
++	str = g_try_new0(char, sn->length);
++	if (!str) {
++		CALLBACK_WITH_FAILURE(cb, NULL, cbd->data);
++		return;
++	}
++
++	strncpy(str, sn->data, sn->length);
++	str[sn->length] = '\0';
++
++	CALLBACK_WITH_SUCCESS(cb, str, cbd->data);
++}
++
++static void samsungipc_query_serial(struct ofono_devinfo *devinfo,
++				ofono_devinfo_query_cb_t cb, void *user_data)
++{
++	struct devinfo_data *data = ofono_devinfo_get_data(devinfo);
++	struct cb_data *cbd = cb_data_new(cb, user_data);
++	uint8_t *msg;
++
++	msg = g_try_new0(uint8_t, 1);
++	msg[0] = IPC_MISC_ME_SN_SERIAL_NUM;
++
++	if (ipc_device_enqueue_message(data->device, IPC_MISC_ME_SN, IPC_TYPE_GET,
++						msg, 1, misc_me_sn_cb, cbd) > 0)
++		return;
++
++	g_free(cbd);
++
++	CALLBACK_WITH_FAILURE(cb, NULL, data);
++}
++
++static void reachable_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct ofono_devinfo *info = user_data;
++
++	if (error) {
++		ofono_devinfo_remove(info);
++		return;
++	}
++
++	ofono_devinfo_register(info);
++}
++
++static int samsungipc_devinfo_probe(struct ofono_devinfo *devinfo,
++				unsigned int vendor, void *user_data)
++{
++	struct devinfo_data *data;
++	struct ipc_device *device = user_data;
++	uint8_t *msg;
++
++	DBG("");
++
++	data = g_new0(struct devinfo_data, 1);
++
++	data->device = device;
++
++	ofono_devinfo_set_data(devinfo, data);
++
++	/* Just issue a IPC_MISC_ME_VERSION request here to check modem availability and
++	 * defer ofono_devinfo_register call */
++	msg = g_try_new0(uint8_t, 1);
++	msg[0] = 0xff;
++	ipc_device_enqueue_message(data->device, IPC_MISC_ME_VERSION, IPC_TYPE_GET,
++						msg, 1, reachable_cb, devinfo);
++
++	return 0;
++}
++
++static void samsungipc_devinfo_remove(struct ofono_devinfo *devinfo)
++{
++	struct devinfo_data *data = ofono_devinfo_get_data(devinfo);
++
++	DBG("");
++
++	ofono_devinfo_set_data(devinfo, NULL);
++
++	g_free(data);
++}
++
++static struct ofono_devinfo_driver driver = {
++	.name				= "samsungipcmodem",
++	.probe				= samsungipc_devinfo_probe,
++	.remove				= samsungipc_devinfo_remove,
++	.query_manufacturer	= samsungipc_query_manufacturer,
++	.query_model		= samsungipc_query_model,
++	.query_revision		= samsungipc_query_revision,
++	.query_serial		= samsungipc_query_serial,
++};
++
++void samsungipc_devinfo_init(void)
++{
++	ofono_devinfo_driver_register(&driver);
++}
++
++void samsungipc_devinfo_exit(void)
++{
++	ofono_devinfo_driver_unregister(&driver);
++}
+diff --git a/drivers/samsungipcmodem/gprs-context.c b/drivers/samsungipcmodem/gprs-context.c
+new file mode 100644
+index 00000000..bd02e714
+--- /dev/null
++++ b/drivers/samsungipcmodem/gprs-context.c
+@@ -0,0 +1,311 @@
++/*
++ *
++ *  oFono - Open Source Telephony
++ *
++ *  Copyright (C) 2012 Simon Busch <morphis at gravedo.de>. All rights reserved.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License version 2 as
++ *  published by the Free Software Foundation.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ */
++
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
++#define _GNU_SOURCE
++#include <string.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <errno.h>
++
++#include <ofono/log.h>
++#include <ofono/modem.h>
++#include <ofono/gprs-context.h>
++
++#include <glib.h>
++
++#include "samsungipcmodem.h"
++#include "ipc.h"
++#include "util.h"
++
++#define IP_MAX_LENGTH	15
++
++struct gprs_context_data {
++	struct ipc_device *device;
++	unsigned int active_context;
++	unsigned int enabled;
++	char username[OFONO_GPRS_MAX_USERNAME_LENGTH + 1];
++	char password[OFONO_GPRS_MAX_PASSWORD_LENGTH + 1];
++};
++
++static void notify_gprs_ip_configuration_cb(uint16_t cmd, void *data, uint16_t length,
++										void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_gprs_context_cb_t cb = cbd->cb;
++	struct ofono_gprs_context *gc = cbd->user;
++	struct gprs_context_data *gcd = ofono_gprs_context_get_data(gc);
++	struct ipc_gprs_ip_configuration *resp = data;
++	struct ipc_client *client;
++	char local[IP_MAX_LENGTH];
++	char dns1[IP_MAX_LENGTH];
++	char dns2[IP_MAX_LENGTH];
++	char gateway[IP_MAX_LENGTH];
++	char subnetmask[IP_MAX_LENGTH];
++	const char *dns[3];
++	char *interface;
++
++	snprintf(local, IP_MAX_LENGTH, "%i.%i.%i.%i", resp->ip[0], resp->ip[1],
++			 resp->ip[2], resp->ip[3]);
++	snprintf(dns1, IP_MAX_LENGTH, "%i.%i.%i.%i", resp->dns1[0], resp->dns1[1],
++			 resp->dns1[2], resp->dns1[3]);
++	snprintf(dns2, IP_MAX_LENGTH, "%i.%i.%i.%i", resp->dns2[0], resp->dns2[1],
++			 resp->dns2[2], resp->dns2[3]);
++	snprintf(local, IP_MAX_LENGTH, "%i.%i.%i.%i", resp->gateway[0], resp->gateway[1],
++			 resp->gateway[2], resp->gateway[3]);
++	snprintf(local, IP_MAX_LENGTH, "%i.%i.%i.%i", resp->subnet_mask[0], resp->subnet_mask[1],
++			 resp->subnet_mask[2], resp->subnet_mask[3]);
++
++	dns[0] = dns1;
++	dns[1] = dns2;
++	dns[2] = 0;
++
++	client = ipc_device_get_client(gcd->device);
++	interface = ipc_client_gprs_get_iface(client, gcd->active_context);
++
++	ofono_gprs_context_set_interface(gc, interface);
++	ofono_gprs_context_set_ipv4_address(gc, local, TRUE);
++	ofono_gprs_context_set_ipv4_netmask(gc, subnetmask);
++	ofono_gprs_context_set_ipv4_dns_servers(gc, dns);
++	ofono_gprs_context_set_ipv4_gateway(gc, gateway);
++
++	gcd->enabled = 1;
++
++	CALLBACK_WITH_SUCCESS(cb, cbd->data);
++
++	g_free(cbd);
++	g_free(interface);
++}
++
++static void pdp_context_activate_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	struct ofono_gprs_context *gc = cbd->user;
++	ofono_gprs_context_cb_t cb = cbd->cb;
++	struct gprs_context_data *gcd = ofono_gprs_context_get_data(gc);
++
++	if (error) {
++		CALLBACK_WITH_FAILURE(cb, cbd->data);
++		gcd->active_context = 0;
++		g_free(cbd);
++		return;
++	}
++
++	ipc_device_add_notifcation_watch(gcd->device, IPC_GPRS_IP_CONFIGURATION,
++								notify_gprs_ip_configuration_cb, cbd);
++}
++
++static void define_pdp_context_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_gprs_context_cb_t cb = cbd->cb;
++	struct ofono_gprs_context *gc = cbd->user;
++	struct gprs_context_data *gcd = ofono_gprs_context_get_data(gc);
++	struct ipc_gen_phone_res *resp = data;
++	struct ipc_gprs_pdp_context_set *req;
++
++	if (error || ipc_gen_phone_res_check(resp) < 0)
++		goto error;
++
++	req = g_try_new0(struct ipc_gprs_pdp_context_set, 1);
++	if (!req)
++		goto error;
++
++	ipc_gprs_pdp_context_setup(req, 1, /* activate the context */
++					gcd->active_context, gcd->username, gcd->password);
++
++	if(ipc_device_enqueue_message(gcd->device, IPC_GPRS_DEFINE_PDP_CONTEXT, IPC_TYPE_SET,
++						req, sizeof(struct ipc_gprs_pdp_context_set),
++						pdp_context_activate_cb, cbd) > 0)
++		return;
++
++error:
++	gcd->active_context = 0;
++	CALLBACK_WITH_FAILURE(cb, cbd->data);
++	g_free(cbd);
++}
++
++static void samsungipc_gprs_activate_primary(struct ofono_gprs_context *gc,
++				const struct ofono_gprs_primary_context *ctx,
++				ofono_gprs_context_cb_t cb, void *data)
++{
++	struct gprs_context_data *gcd = ofono_gprs_context_get_data(gc);
++	struct ipc_gprs_define_pdp_context *req;
++	struct cb_data *cbd;
++
++	req = g_try_new0(struct ipc_gprs_define_pdp_context, 1);
++	if (!req) {
++		CALLBACK_WITH_FAILURE(cb, data);
++		return;
++	}
++
++	cbd = cb_data_new(cb, data);
++	cbd->user = gc;
++
++	/* IPv6 support not implemented */
++	if (ctx->proto != OFONO_GPRS_PROTO_IP)
++		goto error;
++
++	DBG("cid %u", ctx->cid);
++
++	gcd->active_context = ctx->cid;
++	memcpy(gcd->username, ctx->username, sizeof(ctx->username));
++	memcpy(gcd->password, ctx->password, sizeof(ctx->password));
++
++	req->cid = ctx->cid;
++	req->enable = 1; /* enable the context */
++	strncpy((char*) req->apn, ctx->apn, 124);
++
++	if(ipc_device_enqueue_message(gcd->device, IPC_GPRS_DEFINE_PDP_CONTEXT, IPC_TYPE_SET,
++						req, sizeof(struct ipc_gprs_define_pdp_context),
++						define_pdp_context_cb, cbd) > 0)
++		return;
++
++error:
++	CALLBACK_WITH_FAILURE(cb, data);
++}
++
++static void pdp_context_deactivate_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct ipc_gen_phone_res *resp = data;
++	struct cb_data *cbd = user_data;
++	ofono_gprs_context_cb_t cb = cbd->cb;
++	struct gprs_context_data *gcd = cbd->user;
++
++	if (error || ipc_gen_phone_res_check(resp) < 0) {
++		CALLBACK_WITH_FAILURE(cb, cbd->data);
++		goto done;
++	}
++
++	gcd->enabled = 0;
++	gcd->active_context = 0;
++
++	CALLBACK_WITH_SUCCESS(cb, cbd->data);
++
++done:
++	g_free(cbd);
++}
++
++static void samsungipc_gprs_deactivate_primary(struct ofono_gprs_context *gc,
++					unsigned int cid,
++					ofono_gprs_context_cb_t cb, void *data)
++{
++	struct gprs_context_data *gcd = ofono_gprs_context_get_data(gc);
++	struct ipc_gprs_pdp_context_set *req;
++	struct cb_data *cbd;
++
++	DBG("cid %u", cid);
++
++	req = g_try_new0(struct ipc_gprs_pdp_context_set, 1);
++	if (!req) {
++		CALLBACK_WITH_FAILURE(cb, data);
++		return;
++	}
++
++	cbd = cb_data_new(cb, data);
++	cbd->user = gcd;
++
++	ipc_gprs_pdp_context_setup(req, 0, /* deactivate the context */
++					cid, NULL, NULL);
++
++	if(ipc_device_enqueue_message(gcd->device, IPC_GPRS_DEFINE_PDP_CONTEXT, IPC_TYPE_SET,
++						req, sizeof(struct ipc_gprs_pdp_context_set),
++						pdp_context_deactivate_cb, cbd) > 0)
++		return;
++
++	CALLBACK_WITH_FAILURE(cb, data);
++	g_free(cbd);
++}
++
++static void samsungipc_gprs_detach_shutdown(struct ofono_gprs_context *gc,
++					unsigned int cid)
++{
++	DBG("cid %u", cid);
++}
++
++static void notify_gprs_status_cb(uint16_t cmd, void *data, uint16_t length, void *user_data)
++{
++	struct ofono_gprs_context *gc = user_data;
++	struct gprs_context_data *gcd = ofono_gprs_context_get_data(gc);
++	struct ipc_gprs_call_status *resp = data;
++
++	if (gcd->enabled &&
++		(resp->state == IPC_GPRS_STATE_NOT_ENABLED ||
++		 resp->state == IPC_GPRS_STATE_DISABLED)) {
++		ofono_gprs_context_deactivated(gc, gcd->active_context);
++	}
++}
++
++static int samsungipc_gprs_context_probe(struct ofono_gprs_context *gc,
++					unsigned int vendor, void *data)
++{
++	struct gprs_context_data *gcd;
++
++	DBG("");
++
++	gcd = g_try_new0(struct gprs_context_data, 1);
++	if (gcd == NULL)
++		return -ENOMEM;
++
++	gcd->device = data;
++	gcd->active_context = 0;
++	gcd->enabled = 0;
++
++	ofono_gprs_context_set_data(gc, gcd);
++
++	ipc_device_add_notifcation_watch(gcd->device, IPC_GPRS_CALL_STATUS,
++								notify_gprs_status_cb, gc);
++
++	return 0;
++}
++
++static void samsungipc_gprs_context_remove(struct ofono_gprs_context *gc)
++{
++	struct gprs_context_data *gcd = ofono_gprs_context_get_data(gc);
++
++	DBG("");
++
++	ofono_gprs_context_set_data(gc, NULL);
++
++	g_free(gcd);
++}
++
++static struct ofono_gprs_context_driver driver = {
++	.name			= "samsungipcmodem",
++	.probe			= samsungipc_gprs_context_probe,
++	.remove			= samsungipc_gprs_context_remove,
++	.activate_primary	= samsungipc_gprs_activate_primary,
++	.deactivate_primary	= samsungipc_gprs_deactivate_primary,
++	.detach_shutdown	= samsungipc_gprs_detach_shutdown,
++};
++
++void samsungipc_gprs_context_init(void)
++{
++	ofono_gprs_context_driver_register(&driver);
++}
++
++void samsungipc_gprs_context_exit(void)
++{
++	ofono_gprs_context_driver_unregister(&driver);
++}
+diff --git a/drivers/samsungipcmodem/gprs.c b/drivers/samsungipcmodem/gprs.c
+new file mode 100644
+index 00000000..737583ee
+--- /dev/null
++++ b/drivers/samsungipcmodem/gprs.c
+@@ -0,0 +1,215 @@
++/*
++ *
++ *  oFono - Open Source Telephony
++ *
++ *  Copyright (C) 2012 Simon Busch <morphis at gravedo.de>. All rights reserved.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License version 2 as
++ *  published by the Free Software Foundation.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ */
++
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
++#include <ofono/log.h>
++#include <ofono/modem.h>
++#include <ofono/gprs.h>
++
++#include <glib.h>
++
++#include "samsungipcmodem.h"
++#include "ipc.h"
++#include "util.h"
++
++struct gprs_data {
++	struct ipc_device *device;
++	guint status_watch;
++	guint hsdpa_status_watch;
++};
++
++static void samsungipc_set_attached(struct ofono_gprs *gprs, int attached,
++					ofono_gprs_cb_t cb, void *data)
++{
++	/* No attach/detach possible so always succeed here */
++	CALLBACK_WITH_SUCCESS(cb, data);
++}
++
++static void gprs_attached_status_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_gprs_status_cb_t cb = cbd->cb;
++	struct ipc_net_regist_response *resp = data;
++
++	if (error) {
++		CALLBACK_WITH_FAILURE(cb, -1, cbd->data);
++		goto done;
++	}
++
++	CALLBACK_WITH_SUCCESS(cb, resp->reg_state - 1, cbd->data);
++
++done:
++	g_free(cbd);
++}
++
++static void samsungipc_attached_status(struct ofono_gprs *gprs,
++				ofono_gprs_status_cb_t cb, void *data)
++{
++	struct gprs_data *gd = ofono_gprs_get_data(gprs);
++	struct cb_data *cbd;
++	struct ipc_net_regist_get *req;
++
++	DBG("");
++
++	req = g_try_new0(struct ipc_net_regist_get, 1);
++	if (!req) {
++		CALLBACK_WITH_FAILURE(cb, -1, data);
++		return;
++	}
++
++	cbd = cb_data_new(cb, data);
++
++	ipc_net_regist_get_setup(req, IPC_NET_SERVICE_DOMAIN_GPRS);
++
++	if(ipc_device_enqueue_message(gd->device, IPC_NET_REGIST, IPC_TYPE_GET,
++						req, sizeof(struct ipc_net_regist_get),
++						gprs_attached_status_cb, cbd) > 0)
++		return;
++
++	CALLBACK_WITH_FAILURE(cb, -1, cbd->data);
++
++	g_free(cbd);
++	g_free(req);
++}
++
++static void notify_gprs_status_cb(uint16_t cmd, void *data, uint16_t length, void *user_data)
++{
++	struct ofono_gprs *gprs = user_data;
++	struct ipc_net_regist_response *resp = data;
++
++	if (resp->domain != IPC_NET_SERVICE_DOMAIN_GPRS)
++		return;
++
++	ofono_gprs_status_notify(gprs, resp->reg_state - 1);
++}
++
++static void gprs_status_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct ofono_gprs *gprs = user_data;
++	struct ipc_net_regist_response *resp = data;
++
++	if (resp->domain != IPC_NET_SERVICE_DOMAIN_GPRS || error)
++		return;
++
++	ofono_gprs_status_notify(gprs, resp->reg_state - 1);
++}
++
++static void notify_hsdpa_status_cb(uint16_t cmd, void *data, uint16_t length, void *user_data)
++{
++	struct ofono_gprs *gprs = user_data;
++	struct gprs_data *gd = ofono_gprs_get_data(gprs);
++	struct ipc_net_regist_get *req;
++
++	DBG("");
++
++	req = g_try_new0(struct ipc_net_regist_get, 1);
++	if (!req)
++		return;
++
++	ipc_net_regist_get_setup(req, IPC_NET_SERVICE_DOMAIN_GPRS);
++
++	if(ipc_device_enqueue_message(gd->device, IPC_NET_REGIST, IPC_TYPE_GET,
++						req, sizeof(struct ipc_net_regist_get),
++						gprs_status_cb, gprs) > 0)
++		return;
++
++	g_free(req);
++}
++
++static void initial_status_cb(uint16_t cmd, void *data, uint16_t length, void *user_data)
++{
++	struct ofono_gprs *gprs = user_data;
++	struct ipc_net_regist_response *resp = data;
++	struct gprs_data *gd = ofono_gprs_get_data(gprs);
++
++	if (resp->domain != IPC_NET_SERVICE_DOMAIN_GPRS)
++		return;
++
++	ofono_gprs_register(gprs);
++
++	ofono_gprs_status_notify(gprs, resp->reg_state - 1);
++
++	ipc_device_remove_watch(gd->device, gd->status_watch);
++
++	gd->status_watch = ipc_device_add_notifcation_watch(gd->device, IPC_NET_REGIST,
++								notify_gprs_status_cb, gprs);
++}
++
++static int samsungipc_gprs_probe(struct ofono_gprs *gprs,
++				unsigned int vendor, void *user_data)
++{
++	struct gprs_data *gd;
++	struct ipc_client *client;
++	struct ipc_client_gprs_capabilities caps;
++
++	DBG("");
++
++	gd = g_new0(struct gprs_data, 1);
++	gd->device = user_data;
++
++	ofono_gprs_set_data(gprs, gd);
++
++	gd->status_watch = ipc_device_add_notifcation_watch(gd->device, IPC_NET_REGIST,
++												initial_status_cb, gprs);
++	gd->hsdpa_status_watch = ipc_device_add_notifcation_watch(gd->device, IPC_GPRS_HSDPA_STATUS,
++														notify_hsdpa_status_cb, gprs);
++
++	client = ipc_device_get_client(gd->device);
++	ipc_client_gprs_get_capabilities(client, &caps);
++
++	ofono_gprs_set_cid_range(gprs, 1, caps.cid_max);
++
++	return 0;
++}
++
++static void samsungipc_gprs_remove(struct ofono_gprs *gprs)
++{
++	struct gprs_data *gd = ofono_gprs_get_data(gprs);
++
++	DBG("");
++
++	ipc_device_remove_watch(gd->device, gd->status_watch);
++
++	ofono_gprs_set_data(gprs, NULL);
++
++	g_free(gd);
++}
++
++static struct ofono_gprs_driver driver = {
++	.name			= "samsungipcmodem",
++	.probe			= samsungipc_gprs_probe,
++	.remove			= samsungipc_gprs_remove,
++	.attached_status	= samsungipc_attached_status,
++	.set_attached	= samsungipc_set_attached,
++};
++
++void samsungipc_gprs_init(void)
++{
++	ofono_gprs_driver_register(&driver);
++}
++
++void samsungipc_gprs_exit(void)
++{
++	ofono_gprs_driver_unregister(&driver);
++}
+diff --git a/drivers/samsungipcmodem/ipc.c b/drivers/samsungipcmodem/ipc.c
+new file mode 100644
+index 00000000..3b4e6545
+--- /dev/null
++++ b/drivers/samsungipcmodem/ipc.c
+@@ -0,0 +1,443 @@
++/*
++ *
++ *  oFono - Open Source Telephony
++ *
++ *  Copyright (C) 2012 Simon Busch <morphis at gravedo.de>. All rights reserved.
++ *
++ *  Some parts of the code below are copied from drivers/qmimodem/qmi.c and are
++ *  Copyright (C) 2011-2012  Intel Corporation. All rights reserved.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License version 2 as
++ *  published by the Free Software Foundation.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ */
++
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
++#define _GNU_SOURCE
++#include <stdio.h>
++#include <ctype.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include <glib.h>
++
++#include <ofono/log.h>
++
++#include "ipc.h"
++
++struct ipc_request {
++	uint16_t command;
++	uint8_t type;
++	uint8_t id;
++	void *data;
++	uint16_t length;
++	ipc_response_func_t cb;
++	void *cb_data;
++};
++
++struct ipc_device {
++	int ref_count;
++	int fd;
++	GIOChannel *io;
++	bool close_on_unref;
++	guint read_watch;
++	guint write_watch;
++	ipc_debug_func_t debug_func;
++	void *debug_data;
++	struct ipc_client *client;
++	uint8_t next_id;
++	GQueue *req_queue;
++	GQueue *wait_queue;
++	GList *notification_watches;
++	guint next_watch_id;
++};
++
++struct notication_watch {
++	guint id;
++	uint8_t type;
++	uint16_t cmd;
++	ipc_notify_func_t notify_cb;
++	void *notify_data;
++};
++
++static void __debug_device(struct ipc_device *device,
++						const char *format, ...)
++{
++	char strbuf[72 + 16];
++	va_list ap;
++
++	if (!device->debug_func)
++		return;
++
++	va_start(ap, format);
++	vsnprintf(strbuf, sizeof(strbuf), format, ap);
++	va_end(ap);
++
++	device->debug_func(strbuf, device->debug_data);
++}
++
++static guint next_message_id(struct ipc_device *device)
++{
++	if (device->next_id == 255)
++		device->next_id = 1;
++
++	return device->next_id++;
++}
++
++static guint next_watch_id(struct ipc_device *device)
++{
++	if (device->next_watch_id == G_MAXUINT)
++		device->next_watch_id = 1;
++
++	return device->next_watch_id++;
++}
++
++static gint __request_compare(gconstpointer a, gconstpointer b)
++{
++	const struct ipc_request *req = a;
++	uint16_t id = GPOINTER_TO_UINT(b);
++
++	return req->id - id;
++}
++
++static void handle_response(struct ipc_device *device, struct ipc_message_info *resp)
++{
++	GList *list;
++	struct ipc_request *req;
++
++	list = g_queue_find_custom(device->wait_queue,
++			GUINT_TO_POINTER(resp->aseq), __request_compare);
++	if (!list) {
++		__debug_device(device, "Did not found corresponding request for received response message");
++		return;
++	}
++
++	req = list->data;
++	if (req->cb)
++		req->cb(resp->cmd, resp->data, resp->length, 0, req->cb_data);
++}
++
++static void handle_notification(struct ipc_device *device, struct ipc_message_info *resp)
++{
++	GList *list;
++
++	for (list = g_list_first(device->notification_watches); list;
++						list = g_list_next(list)) {
++		struct notication_watch *watch = list->data;
++
++		if (!watch)
++			continue;
++
++		if (watch->type == resp->type && watch->cmd == resp->cmd)
++			watch->notify_cb(resp->cmd, resp->data, resp->length, watch->notify_data);
++	}
++}
++
++static gboolean received_data(GIOChannel *channel, GIOCondition cond,
++							  gpointer user_data)
++{
++	struct ipc_device *device = user_data;
++	struct ipc_message_info resp;
++	int ret;
++
++	if (cond & G_IO_NVAL)
++		return FALSE;
++
++	ret = ipc_client_recv(device->client, &resp);
++	if (ret < 0) {
++		ofono_error("Could not receive IPC message from modem");
++		return FALSE;
++	}
++
++	switch (resp.type) {
++	case IPC_TYPE_RESP:
++		ofono_debug("Received IPC response message [id=%i, type=%s cmd=%s]",
++				resp.aseq, ipc_response_type_to_str(resp.type),
++				ipc_command_to_str(resp.cmd));
++		handle_response(device, &resp);
++		break;
++	case IPC_TYPE_NOTI:
++	case IPC_TYPE_INDI:
++		ofono_debug("Received IPC %s message [id=%i, type=%s, cmd=%s]",
++				resp.type == IPC_TYPE_NOTI ? "notification" : "indication",
++				resp.aseq, ipc_response_type_to_str(resp.type),
++				ipc_command_to_str(resp.cmd));
++		handle_notification(device, &resp);
++		break;
++		break;
++	default:
++		ofono_error("Received unhandled IPC message type [id=%i, type=%s, cmd=%s]",
++				resp.aseq, ipc_response_type_to_str(resp.type),
++				ipc_command_to_str(resp.cmd));
++		break;
++	}
++
++	// FIXME this leads to a SEGV somehow:
++	// g_source_callback_ref (cb_data=0x0) at /build/buildd/glib2.0-2.32.3/./glib/gmain.c:1275
++	// 1275/build/buildd/glib2.0-2.32.3/.32/glib/gmain.c: Datei oder Verzeichnis nicht gefunden.
++	// ipc_client_response_free(device->client, &resp);
++
++	return TRUE;
++}
++
++static void read_watch_destroy(gpointer user_data)
++{
++	struct ipc_device *device = user_data;
++
++	device->read_watch = 0;
++}
++
++static gboolean can_write_data(GIOChannel *channel, GIOCondition cond,
++							gpointer user_data)
++{
++	struct ipc_device *device = user_data;
++	struct ipc_request *req;
++
++	req = g_queue_pop_head(device->req_queue);
++	if (!req)
++		return FALSE;
++
++	ofono_debug("Sending IPC request message [id=%i, cmd=%s, type=%s]",
++			req->id, ipc_command_to_str(req->command),
++			ipc_request_type_to_str(req->type));
++
++	ipc_client_send(device->client, req->command, req->type,
++				req->data, req->length, req->id);
++
++	// FIXME start timeout for message
++
++	g_free(req->data);
++	req->data = NULL;
++
++	if (req->cb != NULL)
++		g_queue_push_tail(device->wait_queue, req);
++
++	if (g_queue_get_length(device->req_queue) > 0)
++		return TRUE;
++
++	return FALSE;
++}
++
++static void write_watch_destroy(gpointer user_data)
++{
++	struct ipc_device *device = user_data;
++
++	device->write_watch = 0;
++}
++
++static void wakeup_writer(struct ipc_device *device)
++{
++	if (device->write_watch > 0)
++		return;
++
++	device->write_watch = g_io_add_watch_full(device->io, G_PRIORITY_HIGH,
++				G_IO_OUT | G_IO_HUP | G_IO_ERR | G_IO_NVAL,
++				can_write_data, device, write_watch_destroy);
++}
++
++struct ipc_device *ipc_device_new(int fd, struct ipc_client *client)
++{
++	struct ipc_device *device;
++
++	device = g_try_new0(struct ipc_device, 1);
++	if (!device)
++		return NULL;
++
++	device->ref_count = 1;
++	device->fd = fd;
++	device->next_id = 1;
++	device->next_watch_id = 1;
++	device->client = client;
++	device->close_on_unref = false;
++	device->req_queue = g_queue_new();
++	device->wait_queue = g_queue_new();
++	device->notification_watches = g_list_alloc();
++
++	device->io = g_io_channel_unix_new(device->fd);
++
++	g_io_channel_set_encoding(device->io, NULL, NULL);
++	g_io_channel_set_buffered(device->io, FALSE);
++
++	device->read_watch = g_io_add_watch_full(device->io, G_PRIORITY_DEFAULT,
++				G_IO_IN | G_IO_HUP | G_IO_ERR | G_IO_NVAL,
++				received_data, device, read_watch_destroy);
++
++	g_io_channel_unref(device->io);
++
++	return device;
++}
++
++struct ipc_device *ipc_device_ref(struct ipc_device *device)
++{
++	if (!device)
++		return NULL;
++
++	__sync_fetch_and_add(&device->ref_count, 1);
++
++	return device;
++}
++
++static void free_notification_watch(gpointer data)
++{
++	struct notication_watch *watch = data;
++	free(watch);
++}
++
++void ipc_device_unref(struct ipc_device *device)
++{
++	if (!device)
++		return;
++
++	if (__sync_sub_and_fetch(&device->ref_count, 1))
++		return;
++
++	__debug_device(device, "device %p free", device);
++
++	if (device->write_watch > 0)
++		g_source_remove(device->write_watch);
++
++	if (device->read_watch > 0)
++		g_source_remove(device->read_watch);
++
++	if (device->close_on_unref)
++		close(device->fd);
++
++	g_list_free_full(device->notification_watches, free_notification_watch);
++
++	g_free(device);
++}
++
++static guint add_response_watch(struct ipc_device *device, uint8_t type, uint16_t cmd,
++							ipc_notify_func_t notify_cb, void *user_data)
++{
++	struct notication_watch *watch;
++
++	watch = g_try_new0(struct notication_watch, 1);
++	if (!watch)
++		return -1;
++
++	watch->id = next_watch_id(device);
++	watch->type = type;
++	watch->cmd = cmd;
++	watch->notify_cb = notify_cb;
++	watch->notify_data = user_data;
++
++	device->notification_watches = g_list_append(device->notification_watches, watch);
++
++	return watch->id;
++}
++
++guint ipc_device_add_notifcation_watch(struct ipc_device *device, uint16_t cmd,
++							ipc_notify_func_t notify_cb, void *user_data)
++{
++	return add_response_watch(device, IPC_TYPE_NOTI, cmd, notify_cb, user_data);
++}
++
++guint ipc_device_add_indication_watch(struct ipc_device *device, uint16_t cmd,
++							ipc_notify_func_t notify_cb, void *user_data)
++{
++	return add_response_watch(device, IPC_TYPE_INDI, cmd, notify_cb, user_data);
++}
++
++static gint __notification_watch_id_compare(gconstpointer a, gconstpointer b)
++{
++	const struct notication_watch *watch = a;
++	const guint id = GPOINTER_TO_UINT(b);
++
++	if (a == NULL || b == NULL)
++		return -1;
++
++	return watch->id - id;
++}
++
++static void remove_response_watch(struct ipc_device *device, guint id)
++{
++	GList *watches;
++
++	watches = g_list_find_custom(device->notification_watches,
++						GUINT_TO_POINTER(id), __notification_watch_id_compare);
++
++	if (watches == NULL)
++		return;
++
++	device->notification_watches = g_list_delete_link(device->notification_watches, watches);
++}
++
++void ipc_device_remove_watch(struct ipc_device *device, guint id)
++{
++	remove_response_watch(device, id);
++}
++
++int ipc_device_get_fd(struct ipc_device *device)
++{
++	if (!device)
++		return -1;
++
++	return device->fd;
++}
++
++struct ipc_client *ipc_device_get_client(struct ipc_device *device)
++{
++	if (!device)
++		return NULL;
++
++	return device->client;
++}
++
++int ipc_device_enqueue_message(struct ipc_device *device,
++			uint16_t command, uint8_t type, void *data, uint16_t length,
++			ipc_response_func_t cb, void *user_data)
++{
++	struct ipc_request *req;
++
++	req = g_try_new0(struct ipc_request, 1);
++	if (!req)
++		return -1;
++
++	req->command = command;
++	req->type = type;
++	req->cb = cb;
++	req->cb_data = user_data;
++	req->id = next_message_id(device);
++	req->data = data;
++	req->length = length;
++
++	g_queue_push_tail(device->req_queue, req);
++
++	wakeup_writer(device);
++
++	return req->id;
++}
++
++void ipc_device_set_debug(struct ipc_device *device,
++				ipc_debug_func_t func, void *user_data)
++{
++	if (device == NULL)
++		return;
++
++	device->debug_func = func;
++	device->debug_data = user_data;
++}
++
++void ipc_device_set_close_on_unref(struct ipc_device *device, bool do_close)
++{
++	if (!device)
++		return;
++
++	device->close_on_unref = do_close;
++}
+diff --git a/drivers/samsungipcmodem/ipc.h b/drivers/samsungipcmodem/ipc.h
+new file mode 100644
+index 00000000..0805e3b8
+--- /dev/null
++++ b/drivers/samsungipcmodem/ipc.h
+@@ -0,0 +1,58 @@
++/*
++ *
++ *  oFono - Open Source Telephony
++ *
++ *  Copyright (C) 2012 Simon Busch <morphis at gravedo.de>. All rights reserved.
++ *
++ *  Some parts of the code below are copied from drivers/qmimodem/qmi.c and are
++ *  Copyright (C) 2011-2012  Intel Corporation. All rights reserved.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License version 2 as
++ *  published by the Free Software Foundation.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ */
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#include <samsung-ipc.h>
++
++typedef void (*ipc_debug_func_t)(const char *str, void *user_data);
++typedef void (*ipc_response_func_t)(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data);
++typedef void (*ipc_notify_func_t)(uint16_t cmd, void *data, uint16_t length, void *user_data);
++
++struct ipc_device;
++
++struct ipc_device *ipc_device_new(int fd, struct ipc_client *client);
++struct ipc_device *ipc_device_ref(struct ipc_device *device);
++void ipc_device_unref(struct ipc_device *device);
++
++guint ipc_device_add_notifcation_watch(struct ipc_device *device, uint16_t cmd,
++							ipc_notify_func_t notify_cb, void *user_data);
++guint ipc_device_add_indication_watch(struct ipc_device *device, uint16_t cmd,
++							ipc_notify_func_t notify_cb, void *user_data);
++
++void ipc_device_remove_watch(struct ipc_device *device, guint id);
++
++int ipc_device_get_fd(struct ipc_device *device);
++
++struct ipc_client *ipc_device_get_client(struct ipc_device *device);
++
++int ipc_device_enqueue_message(struct ipc_device *device,
++			uint16_t command, uint8_t type, void *data, uint16_t length,
++			ipc_response_func_t cb, void *user_data);
++
++void ipc_device_set_debug(struct ipc_device *device,
++				ipc_debug_func_t func, void *user_data);
++
++void ipc_device_set_close_on_unref(struct ipc_device *device, bool do_close);
+diff --git a/drivers/samsungipcmodem/network-registration.c b/drivers/samsungipcmodem/network-registration.c
+new file mode 100644
+index 00000000..2132c15d
+--- /dev/null
++++ b/drivers/samsungipcmodem/network-registration.c
+@@ -0,0 +1,398 @@
++/*
++ *
++ *  oFono - Open Source Telephony
++ *
++ *  Copyright (C) 2012 Simon Busch <morphis at gravedo.de>. All rights reserved.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License version 2 as
++ *  published by the Free Software Foundation.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ */
++
++#define _GNU_SOURCE
++#include <string.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <errno.h>
++
++#include <glib.h>
++
++#include <ofono/log.h>
++#include <ofono/modem.h>
++#include <ofono/netreg.h>
++
++#include "samsungipcmodem.h"
++#include "ipc.h"
++#include "util.h"
++
++struct netreg_data {
++	struct ipc_device *device;
++	guint status_watch;
++	guint rssi_watch;
++	int strength;
++};
++
++static void list_operators_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_netreg_operator_list_cb_t cb = cbd->cb;
++	struct ofono_network_operator *list;
++	struct ofono_network_operator *op;
++	struct ipc_net_plmn_entries *resp = data;
++	struct ipc_net_plmn_entry *entries = data + sizeof(struct ipc_net_plmn_entries);
++	struct ipc_net_plmn_entry *entry;
++	int i;
++
++	DBG("Got %d elements", resp->num);
++
++	if (error) {
++		CALLBACK_WITH_FAILURE(cb, 0, NULL, cbd->data);
++		goto done;
++	}
++
++	list = g_try_new0(struct ofono_network_operator, resp->num);
++	if (list == NULL) {
++		CALLBACK_WITH_FAILURE(cb, 0, NULL, cbd->data);
++		goto done;
++	}
++
++	for (i = 0; i < resp->num; i++) {
++		op = &list[i];
++		entry = &entries[i];
++
++		op->status = entry->status - 1;
++
++		strncpy(op->mcc, entry->plmn, 3);
++		op->mcc[OFONO_MAX_MCC_LENGTH] = '\0';
++
++		strncpy(op->mnc, entry->plmn + 3, 2);
++		op->mnc[OFONO_MAX_MNC_LENGTH] = '\0';
++	}
++
++	CALLBACK_WITH_SUCCESS(cb, resp->num, list, cbd->data);
++
++done:
++	g_free(cbd);
++}
++
++static void samsungipc_list_operators(struct ofono_netreg *netreg,
++				ofono_netreg_operator_list_cb_t cb, void *data)
++{
++	struct netreg_data *nd = ofono_netreg_get_data(netreg);
++	struct cb_data *cbd = cb_data_new(cb, data);
++
++	if(ipc_device_enqueue_message(nd->device, IPC_NET_PLMN_LIST, IPC_TYPE_GET,
++						NULL, 0, list_operators_cb, cbd) > 0)
++		return;
++
++	g_free(cbd);
++
++	CALLBACK_WITH_FAILURE(cb, 0, NULL, data);
++}
++
++static void samsungipc_signal_strength(struct ofono_netreg *netreg,
++				ofono_netreg_strength_cb_t cb, void *data)
++{
++	struct netreg_data *nd = ofono_netreg_get_data(netreg);
++
++	CALLBACK_WITH_SUCCESS(cb, nd->strength, data);
++}
++
++static void network_register_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_netreg_register_cb_t cb = cbd->cb;
++	struct ipc_gen_phone_res *resp = data;
++
++	if (error || ipc_gen_phone_res_check(resp) < 0) {
++		CALLBACK_WITH_FAILURE(cb, cbd->data);
++		goto done;
++	}
++
++	CALLBACK_WITH_SUCCESS(cb, cbd->data);
++
++done:
++	g_free(cbd);
++}
++
++static void samsungipc_register_manual(struct ofono_netreg *netreg,
++				const char *mcc, const char *mnc,
++				ofono_netreg_register_cb_t cb, void *data)
++{
++	struct netreg_data *nd = ofono_netreg_get_data(netreg);
++	struct cb_data *cbd;
++	struct ipc_net_plmn_sel_set *req;
++	char plmn[5];
++
++	req = g_try_new0(struct ipc_net_plmn_sel_set, 1);
++	if (!req) {
++		CALLBACK_WITH_FAILURE(cb, data);
++		return;
++	}
++
++	cbd = cb_data_new(cb, data);
++
++	snprintf(plmn, 5, "%s%s", mcc, mnc);
++	ipc_net_plmn_sel_set_setup(req, IPC_NET_PLMN_SEL_MANUAL, plmn,
++						IPC_NET_ACCESS_TECHNOLOGY_UMTS);
++
++	if(ipc_device_enqueue_message(nd->device, IPC_NET_PLMN_SEL, IPC_TYPE_SET,
++						req, sizeof(struct ipc_net_plmn_sel_set),
++						network_register_cb, cbd) > 0)
++		return;
++
++	g_free(cbd);
++
++	CALLBACK_WITH_FAILURE(cb, data);
++}
++
++static void samsungipc_register_auto(struct ofono_netreg *netreg,
++				ofono_netreg_register_cb_t cb, void *data)
++{
++	struct netreg_data *nd = ofono_netreg_get_data(netreg);
++	struct cb_data *cbd;
++	struct ipc_net_plmn_sel_set *req;
++
++	req = g_try_new0(struct ipc_net_plmn_sel_set, 1);
++	if (!req) {
++		CALLBACK_WITH_FAILURE(cb, data);
++		return;
++	}
++
++	cbd = cb_data_new(cb, data);
++
++	ipc_net_plmn_sel_set_setup(req, IPC_NET_PLMN_SEL_AUTO, NULL,
++						IPC_NET_ACCESS_TECHNOLOGY_UNKNOWN);
++
++	if(ipc_device_enqueue_message(nd->device, IPC_NET_PLMN_SEL, IPC_TYPE_SET,
++						req, sizeof(struct ipc_net_plmn_sel_set),
++						network_register_cb, cbd) > 0)
++		return;
++
++	g_free(cbd);
++
++	CALLBACK_WITH_FAILURE(cb, data);
++}
++
++static void current_operator_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_netreg_operator_cb_t cb = cbd->cb;
++	struct ipc_net_current_plmn_response *resp = data;
++	struct ofono_network_operator op;
++
++	if (error) {
++		CALLBACK_WITH_FAILURE(cb, NULL, cbd->data);
++		goto done;
++	}
++
++	strncpy(op.mcc, resp->plmn, 3);
++	op.mcc[OFONO_MAX_MCC_LENGTH] = '\0';
++
++	strncpy(op.mnc, &resp->plmn[3], 2);
++	op.mnc[OFONO_MAX_MNC_LENGTH] = '\0';
++
++	memset(op.name, 0, OFONO_MAX_OPERATOR_NAME_LENGTH);
++
++	/* Set to current */
++	op.status = 2;
++	/* FIXME check wether this is correct! */
++	op.tech = resp->type;
++
++	DBG("current_operator_cb: mcc=%s, mnc=%s, reg_state=%d, tech=%d",
++		op.mcc, op.mnc, op.status, op.tech);
++
++	CALLBACK_WITH_SUCCESS(cb, &op, cbd->data);
++
++done:
++	g_free(cbd);
++}
++
++static void samsungipc_current_operator(struct ofono_netreg *netreg,
++				ofono_netreg_operator_cb_t cb, void *data)
++{
++	struct netreg_data *nd = ofono_netreg_get_data(netreg);
++	struct cb_data *cbd = cb_data_new(cb, data);
++
++	if(ipc_device_enqueue_message(nd->device, IPC_NET_CURRENT_PLMN, IPC_TYPE_GET,
++						NULL, 0, current_operator_cb, cbd) > 0)
++		return;
++
++	CALLBACK_WITH_FAILURE(cb, NULL, data);
++
++	g_free(cbd);
++}
++
++static void net_status_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_netreg_status_cb_t cb = cbd->cb;
++	struct ipc_net_regist_response *resp = data;
++
++	if (error) {
++		CALLBACK_WITH_FAILURE(cb, -1, -1, -1, -1, cbd->data);
++		goto done;
++	}
++
++	DBG("reg_state=%i, lac=%i, cid=%i, act=%i", resp->reg_state - 1,
++		resp->lac, resp->cid, resp->act);
++
++	CALLBACK_WITH_SUCCESS(cb, resp->reg_state - 1, resp->lac,
++					resp->cid, resp->act, cbd->data);
++
++done:
++	g_free(cbd);
++}
++
++static void samsungipc_registration_status(struct ofono_netreg *netreg,
++					ofono_netreg_status_cb_t cb,
++					void *data)
++{
++	struct netreg_data *nd = ofono_netreg_get_data(netreg);
++	struct cb_data *cbd;
++	struct ipc_net_regist_get *req;
++
++	req = g_try_new0(struct ipc_net_regist_get, 1);
++	if (!req) {
++		CALLBACK_WITH_FAILURE(cb, -1, -1, -1, -1, data);
++		return;
++	}
++
++	cbd = cb_data_new(cb, data);
++
++	ipc_net_regist_get_setup(req, IPC_NET_SERVICE_DOMAIN_GSM);
++
++	if(ipc_device_enqueue_message(nd->device, IPC_NET_REGIST, IPC_TYPE_GET,
++						req, sizeof(struct ipc_net_regist_get),
++						net_status_cb, cbd) > 0)
++		return;
++
++	CALLBACK_WITH_FAILURE(cb, -1, -1, -1, -1, data);
++
++	g_free(cbd);
++}
++
++static void notify_status_cb(uint16_t cmd, void *data, uint16_t length, void *user_data)
++{
++	struct ofono_netreg *netreg = user_data;
++	struct ipc_net_regist_response *resp = data;
++
++	if (resp->domain == IPC_NET_SERVICE_DOMAIN_GPRS)
++		return;
++
++	DBG("reg_state=%i, lac=%i, cid=%i, act=%i", resp->reg_state - 1,
++		resp->lac, resp->cid, resp->act);
++
++	ofono_netreg_status_notify(netreg, resp->reg_state - 1,
++							resp->lac, resp->cid, resp->act);
++}
++
++static int convert_signal_strength(unsigned char rssi)
++{
++	int strength = 0;
++
++	if (rssi < 0x6f)
++		strength = ((((rssi - 0x71) * -1) - (((rssi - 0x71) * -1) % 2)) / 2);
++
++	if (strength > 31)
++		strength = 31;
++
++	return ((strength * 100) / (31));
++}
++
++static void notify_rssi_cb(uint16_t cmd, void *data, uint16_t length, void *user_data)
++{
++	struct ofono_netreg *netreg = user_data;
++	struct netreg_data *nd = ofono_netreg_get_data(netreg);
++	struct ipc_disp_rssi_info *resp = data;
++
++	nd->strength = convert_signal_strength(resp->rssi);
++
++	DBG("rssi=%i, strength=%i", resp->rssi, nd->strength);
++
++	ofono_netreg_strength_notify(netreg, nd->strength);
++}
++
++static void initial_status_cb(uint16_t cmd, void *data, uint16_t length, void *user_data)
++{
++	struct ofono_netreg *netreg = user_data;
++	struct ipc_net_regist_response *resp = data;
++	struct netreg_data *nd = ofono_netreg_get_data(netreg);
++
++	ofono_netreg_register(netreg);
++
++	ofono_netreg_status_notify(netreg, resp->reg_state - 1,
++							resp->lac, resp->cid, resp->act);
++
++	ipc_device_remove_watch(nd->device, nd->status_watch);
++
++	nd->status_watch = ipc_device_add_notifcation_watch(nd->device, IPC_NET_REGIST,
++								notify_status_cb, netreg);
++
++	nd->rssi_watch = ipc_device_add_notifcation_watch(nd->device, IPC_DISP_RSSI_INFO,
++													notify_rssi_cb, netreg);
++}
++
++static int samsungipc_netreg_probe(struct ofono_netreg *netreg, unsigned int vendor,
++				void *data)
++{
++	struct netreg_data *nd;
++
++	nd = g_new0(struct netreg_data, 1);
++	if (!nd)
++		return -ENOMEM;
++
++	nd->device = data;
++	nd->strength = 0;
++
++	ofono_netreg_set_data(netreg, nd);
++
++	nd->status_watch = ipc_device_add_notifcation_watch(nd->device, IPC_NET_REGIST,
++												initial_status_cb, netreg);
++
++	return 0;
++}
++
++static void samsungipc_netreg_remove(struct ofono_netreg *netreg)
++{
++	struct netreg_data *nd = ofono_netreg_get_data(netreg);
++
++	ipc_device_remove_watch(nd->device, nd->status_watch);
++	ipc_device_remove_watch(nd->device, nd->rssi_watch);
++
++	ofono_netreg_set_data(netreg, NULL);
++
++	g_free(nd);
++}
++
++static struct ofono_netreg_driver driver = {
++	.name					= "samsungipcmodem",
++	.probe					= samsungipc_netreg_probe,
++	.remove					= samsungipc_netreg_remove,
++	.registration_status	= samsungipc_registration_status,
++	.current_operator		= samsungipc_current_operator,
++	.register_auto			= samsungipc_register_auto,
++	.register_manual		= samsungipc_register_manual,
++	.strength				= samsungipc_signal_strength,
++	.list_operators			= samsungipc_list_operators,
++};
++
++void samsungipc_netreg_init(void)
++{
++	ofono_netreg_driver_register(&driver);
++}
++
++void samsungipc_netreg_exit(void)
++{
++	ofono_netreg_driver_unregister(&driver);
++}
+diff --git a/drivers/samsungipcmodem/samsungipcmodem.c b/drivers/samsungipcmodem/samsungipcmodem.c
+new file mode 100644
+index 00000000..92cbb356
+--- /dev/null
++++ b/drivers/samsungipcmodem/samsungipcmodem.c
+@@ -0,0 +1,53 @@
++/*
++ *
++ *  oFono - Open Source Telephony
++ *
++ *  Copyright (C) 2012 Simon Busch <morphis at gravedo.de>. All rights reserved.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License version 2 as
++ *  published by the Free Software Foundation.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ */
++
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
++#define OFONO_API_SUBJECT_TO_CHANGE
++#include <ofono/plugin.h>
++
++#include "samsungipcmodem.h"
++
++static int samsungipcmodem_init(void)
++{
++	samsungipc_devinfo_init();
++	samsungipc_sim_init();
++	samsungipc_netreg_init();
++	samsungipc_voicecall_init();
++	samsungipc_gprs_init();
++	samsungipc_gprs_context_init();
++	return 0;
++}
++
++static void samsungipcmodem_exit(void)
++{
++	samsungipc_gprs_context_exit();
++	samsungipc_gprs_exit();
++	samsungipc_voicecall_exit();
++	samsungipc_netreg_exit();
++	samsungipc_sim_exit();
++	samsungipc_devinfo_exit();
++}
++
++OFONO_PLUGIN_DEFINE(samsungipcmodem, "Samsung IPC modem driver", VERSION,
++		OFONO_PLUGIN_PRIORITY_DEFAULT, samsungipcmodem_init, samsungipcmodem_exit)
+diff --git a/drivers/samsungipcmodem/samsungipcmodem.h b/drivers/samsungipcmodem/samsungipcmodem.h
+new file mode 100644
+index 00000000..e9b548c3
+--- /dev/null
++++ b/drivers/samsungipcmodem/samsungipcmodem.h
+@@ -0,0 +1,33 @@
++/*
++ *
++ *  oFono - Open Source Telephony
++ *
++ *  Copyright (C) 2012 Simon Busch <morphis at gravedo.de>. All rights reserved.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License version 2 as
++ *  published by the Free Software Foundation.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ */
++
++extern void samsungipc_devinfo_init(void);
++extern void samsungipc_devinfo_exit(void);
++extern void samsungipc_sim_init(void);
++extern void samsungipc_sim_exit(void);
++extern void samsungipc_netreg_init(void);
++extern void samsungipc_netreg_exit(void);
++extern void samsungipc_voicecall_init(void);
++extern void samsungipc_voicecall_exit(void);
++extern void samsungipc_gprs_init(void);
++extern void samsungipc_gprs_exit(void);
++extern void samsungipc_gprs_context_init(void);
++extern void samsungipc_gprs_context_exit(void);
+diff --git a/drivers/samsungipcmodem/sim.c b/drivers/samsungipcmodem/sim.c
+new file mode 100644
+index 00000000..6db191c2
+--- /dev/null
++++ b/drivers/samsungipcmodem/sim.c
+@@ -0,0 +1,674 @@
++/*
++ *
++ *  oFono - Open Source Telephony
++ *
++ *  Copyright (C) 2012 Simon Busch <morphis at gravedo.de>. All rights reserved.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License version 2 as
++ *  published by the Free Software Foundation.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ */
++
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
++#define _GNU_SOURCE
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <errno.h>
++
++#include <ofono/log.h>
++#include <ofono/modem.h>
++#include <ofono/sim.h>
++
++#include <glib.h>
++
++#include "samsungipcmodem.h"
++#include "ipc.h"
++#include "util.h"
++#include "simutil.h"
++
++struct sim_data {
++	struct ipc_device *device;
++	guint sim_state_query;
++	int pin_attempts[OFONO_SIM_PASSWORD_INVALID];
++};
++
++#define EF_STATUS_INVALIDATED 0
++#define EF_STATUS_VALID 1
++
++#define SIM_MAX_IMSI_LENGTH	16
++
++static void pin_query_locked_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_sim_locked_cb_t cb = cbd->cb;
++	struct ipc_sec_phone_lock_response *resp = data;
++
++	if (error) {
++		CALLBACK_WITH_FAILURE(cb, -1, cbd->data);
++		goto done;
++	}
++
++	CALLBACK_WITH_SUCCESS(cb, resp->status, cbd->data);
++
++done:
++	g_free(cbd);
++}
++
++static void samsungipc_pin_query_enabled(struct ofono_sim *sim,
++				enum ofono_sim_password_type passwd_type,
++				ofono_sim_locked_cb_t cb, void *data)
++{
++	struct sim_data *sd = ofono_sim_get_data(sim);
++	struct cb_data *cbd;
++	struct ipc_sec_phone_lock_get *req;
++
++	DBG("");
++
++	switch (passwd_type) {
++	case OFONO_SIM_PASSWORD_SIM_PIN:
++		break;
++	default:
++		CALLBACK_WITH_FAILURE(cb, -1, data);
++		return;
++	}
++
++	req = g_try_new0(struct ipc_sec_phone_lock_get, 1);
++	if (!req) {
++		CALLBACK_WITH_FAILURE(cb, -1, data);
++		return;
++	}
++
++	cbd = cb_data_new(cb, data);
++
++	if(ipc_device_enqueue_message(sd->device, IPC_SEC_PHONE_LOCK, IPC_TYPE_GET,
++						req, sizeof(struct ipc_sec_phone_lock_get),
++						pin_query_locked_cb, cbd) > 0)
++		return;
++
++	g_free(cbd);
++
++	CALLBACK_WITH_FAILURE(cb, -1, data);
++}
++
++static void change_passwd_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_sim_lock_unlock_cb_t cb = cbd->cb;
++	struct ipc_gen_phone_res *resp = data;
++
++	if (error || cmd != IPC_GEN_PHONE_RES ||
++		ipc_gen_phone_res_check(resp) < 0) {
++		CALLBACK_WITH_FAILURE(cb, cbd->data);
++		goto done;
++	}
++
++	CALLBACK_WITH_SUCCESS(cb, cbd->data);
++
++done:
++	g_free(cbd);
++}
++
++static void samsungipc_change_passwd(struct ofono_sim *sim,
++				enum ofono_sim_password_type passwd_type,
++				const char *old_passwd, const char *new_passwd,
++				ofono_sim_lock_unlock_cb_t cb, void *data)
++{
++	struct sim_data *sd = ofono_sim_get_data(sim);
++	struct cb_data *cbd;
++	struct ipc_sec_change_locking_pw_set *req;
++
++	DBG("");
++
++	switch (passwd_type) {
++	case OFONO_SIM_PASSWORD_SIM_PIN:
++		break;
++	default:
++		CALLBACK_WITH_FAILURE(cb, data);
++		return;
++	}
++
++	req = g_try_new0(struct ipc_sec_change_locking_pw_set, 1);
++	if (!req) {
++		CALLBACK_WITH_FAILURE(cb, data);
++		return;
++	}
++
++	cbd = cb_data_new(cb, data);
++
++	ipc_sec_change_locking_pw_set_setup(req, IPC_SEC_FACILITY_TYPE_SC,
++									(char*) old_passwd, (char*) new_passwd);
++
++	if(ipc_device_enqueue_message(sd->device, IPC_SEC_CHANGE_LOCKING_PW, IPC_TYPE_SET,
++						req, sizeof(struct ipc_sec_change_locking_pw_set),
++						change_passwd_cb, cbd) > 0)
++		return;
++
++	g_free(cbd);
++
++	CALLBACK_WITH_FAILURE(cb, data);
++}
++
++static void pin_enable_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_sim_lock_unlock_cb_t cb = cbd->cb;
++	struct ipc_gen_phone_res *resp = data;
++
++	if (error || cmd != IPC_GEN_PHONE_RES ||
++		ipc_gen_phone_res_check(resp) < 0) {
++		CALLBACK_WITH_FAILURE(cb, cbd->data);
++		goto done;
++	}
++
++	CALLBACK_WITH_SUCCESS(cb, cbd->data);
++
++done:
++	g_free(cbd);
++}
++
++static void samsungipc_pin_enable(struct ofono_sim *sim,
++				enum ofono_sim_password_type passwd_type,
++				int enable, const char *passwd,
++				ofono_sim_lock_unlock_cb_t cb, void *data)
++{
++	struct sim_data *sd = ofono_sim_get_data(sim);
++	struct cb_data *cbd;
++	struct ipc_sec_phone_lock_set *req;
++	int pin_type;
++
++	switch (passwd_type) {
++	case OFONO_SIM_PASSWORD_SIM_PIN:
++		pin_type = IPC_SEC_PIN_TYPE_PIN1;
++		break;
++	case OFONO_SIM_PASSWORD_SIM_PIN2:
++		pin_type = IPC_SEC_PIN_TYPE_PIN2;
++		break;
++	default:
++		CALLBACK_WITH_FAILURE(cb, data);
++		return;
++	}
++
++	req = g_try_new0(struct ipc_sec_phone_lock_set, 1);
++	if (!req) {
++		CALLBACK_WITH_FAILURE(cb, data);
++		return;
++	}
++
++	cbd = cb_data_new(cb, data);
++
++	ipc_sec_phone_lock_set_setup(req, pin_type, enable, (char*) passwd);
++
++	if(ipc_device_enqueue_message(sd->device, IPC_SEC_PHONE_LOCK, IPC_TYPE_SET,
++						req, sizeof(struct ipc_sec_phone_lock_set),
++						pin_enable_cb, cbd) > 0)
++		return;
++
++	CALLBACK_WITH_FAILURE(cb, data);
++	g_free(cbd);
++}
++
++static void puk_send_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_sim_lock_unlock_cb_t cb = cbd->cb;
++	struct ipc_gen_phone_res *resp = data;
++
++	if (error || cmd != IPC_GEN_PHONE_RES ||
++		ipc_gen_phone_res_check(resp) < 0) {
++		CALLBACK_WITH_FAILURE(cb, cbd->data);
++		goto done;
++	}
++
++	CALLBACK_WITH_SUCCESS(cb, cbd->data);
++
++done:
++	g_free(cbd);
++}
++
++static void samsungipc_send_puk(struct ofono_sim *sim, const char *puk,
++				const char *passwd,
++				ofono_sim_lock_unlock_cb_t cb, void *data)
++{
++	struct sim_data *sd = ofono_sim_get_data(sim);
++	struct cb_data *cbd;
++
++	struct ipc_sec_pin_status_set *req;
++
++	DBG("");
++
++	req = g_try_new0(struct ipc_sec_pin_status_set, 1);
++	if (!req) {
++		CALLBACK_WITH_FAILURE(cb, data);
++		return;
++	}
++
++	cbd = cb_data_new(cb, data);
++
++	ipc_sec_pin_status_set_setup(req, IPC_SEC_PIN_TYPE_PIN1, (char*) passwd, (char*) puk);
++
++	if(ipc_device_enqueue_message(sd->device, IPC_SEC_SIM_STATUS, IPC_TYPE_SET,
++						req, sizeof(struct ipc_sec_pin_status_set),
++						puk_send_cb, cbd) > 0)
++		return;
++
++	g_free(cbd);
++
++	CALLBACK_WITH_FAILURE(cb, data);
++}
++
++static void read_binary_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_sim_read_cb_t cb = cbd->cb;
++	const guint8 *response;
++	struct ipc_sec_rsim_access_response *resp;
++	struct ofono_error err;
++
++	if (error || cmd != IPC_SEC_RSIM_ACCESS) {
++		CALLBACK_WITH_FAILURE(cb, NULL, 0, cbd->data);
++		goto done;
++	}
++
++	resp = data;
++
++	DBG("rsim_access_cb: sw1=%02x, sw2=%02x, len=%i", resp->sw1, resp->sw2, resp->len);
++
++	/* taken from drivers/atmodem/sim.c */
++	if ((resp->sw1 != 0x90 && resp->sw1 != 0x91 && resp->sw1 != 0x92) ||
++		(resp->sw1 == 0x90 && resp->sw2 != 0x00)) {
++		memset(&error, 0, sizeof(error));
++
++		err.type = OFONO_ERROR_TYPE_SIM;
++		err.error = (resp->sw1 << 8) | resp->sw2;
++
++		cb(&err, NULL, 0, cbd->data);
++		goto done;
++	}
++
++	response = (const guint8*) data + sizeof(struct ipc_sec_rsim_access_response);
++
++	cb(&err, response, resp->len, cbd->data);
++
++done:
++	g_free(cbd);
++}
++
++static void samsungipc_read_binary(struct ofono_sim *sim, int fileid,
++					int start, int length,
++					ofono_sim_read_cb_t cb, void *cb_data)
++{
++	struct sim_data *sd = ofono_sim_get_data(sim);
++	struct cb_data *cbd;
++	struct ipc_sec_rsim_access_get *req;
++
++	DBG("");
++
++	req = g_try_new0(struct ipc_sec_rsim_access_get, 1);
++	if (!req) {
++		CALLBACK_WITH_FAILURE(cb, NULL, 0, cb_data);
++		return;
++	}
++
++	cbd = cb_data_new(cb, cb_data);
++
++	req->command = IPC_SEC_RSIM_COMMAND_READ_BINARY;
++	req->fileid = (unsigned short) fileid;
++	req->p1 = start >> 8;
++	req->p2 = start & 0xff;
++	req->p3 = length;
++
++	if(ipc_device_enqueue_message(sd->device, IPC_SEC_RSIM_ACCESS, IPC_TYPE_GET,
++						req, sizeof(struct ipc_sec_rsim_access_get),
++						read_binary_cb, cbd) > 0)
++		return;
++
++	g_free(cbd);
++
++	CALLBACK_WITH_FAILURE(cb, NULL, 0, cb_data);
++}
++
++static void query_passwd_state_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_sim_passwd_cb_t cb = cbd->cb;
++	struct ipc_sec_sim_status_response *resp = data;
++	enum ofono_sim_password_type passwd_state;
++
++	if (error) {
++		CALLBACK_WITH_FAILURE(cb, -1, cbd->data);
++		goto done;
++	}
++
++	switch (resp->facility_lock) {
++	case IPC_SEC_FACILITY_LOCK_TYPE_SC_PIN1_REQ:
++		passwd_state = OFONO_SIM_PASSWORD_SIM_PIN;
++		break;
++	case IPC_SEC_FACILITY_LOCK_TYPE_SC_PUK_REQ:
++		passwd_state = OFONO_SIM_PASSWORD_SIM_PUK;
++		break;
++	case IPC_SEC_FACILITY_LOCK_TYPE_SC_UNLOCKED:
++		passwd_state = OFONO_SIM_PASSWORD_NONE;
++		break;
++	default:
++		passwd_state = OFONO_SIM_PASSWORD_INVALID;
++		break;
++	}
++
++	CALLBACK_WITH_SUCCESS(cb, passwd_state, cbd->data);
++
++done:
++	g_free(cbd);
++}
++
++static void samsungipc_query_passwd_state(struct ofono_sim *sim,
++					ofono_sim_passwd_cb_t cb, void *user_data)
++{
++	struct sim_data *sd = ofono_sim_get_data(sim);
++	struct cb_data *cbd = cb_data_new(cb, user_data);
++
++	DBG("");
++
++	if(ipc_device_enqueue_message(sd->device, IPC_SEC_SIM_STATUS, IPC_TYPE_GET,
++						NULL, 0, query_passwd_state_cb, cbd) > 0)
++		return;
++
++	g_free(cbd);
++
++	CALLBACK_WITH_FAILURE(cb, -1, user_data);
++}
++
++static void notify_sim_status_cb(uint16_t cmd, void *data, uint16_t length, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_sim_lock_unlock_cb_t cb = cbd->cb;
++	struct ipc_sec_sim_status_response *resp = data;
++	struct sim_data *sd = cbd->user;
++
++	switch (resp->status) {
++	case IPC_SEC_SIM_STATUS_INITIALIZING:
++	case IPC_SEC_SIM_STATUS_PB_INIT_COMPLETE:
++		/* Ok, SIM is initializing now; next status update will tell us more */
++		break;
++	case IPC_SEC_SIM_STATUS_INIT_COMPLETE:
++		/* SIM initialization is done now */
++		CALLBACK_WITH_SUCCESS(cb, cbd->data);
++		goto done;
++	default:
++		CALLBACK_WITH_FAILURE(cb, cbd->data);
++		goto done;
++	}
++
++	return;
++
++done:
++	ipc_device_remove_watch(sd->device, sd->sim_state_query);
++	g_free(cbd);
++}
++
++static void pin_send_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_sim_lock_unlock_cb_t cb = cbd->cb;
++	struct sim_data *sd = cbd->user;
++	struct ipc_gen_phone_res *resp = data;
++
++	if (error || cmd != IPC_GEN_PHONE_RES ||
++		ipc_gen_phone_res_check(resp) < 0) {
++		CALLBACK_WITH_FAILURE(cb, cbd->data);
++		g_free(cbd);
++		return;
++	}
++
++	/* wait until SIM init complete status notification arrives */
++	sd->sim_state_query = ipc_device_add_notifcation_watch(sd->device,
++												IPC_SEC_SIM_STATUS, notify_sim_status_cb, cbd);
++}
++
++static void samsungipc_pin_send(struct ofono_sim *sim, const char *passwd,
++			ofono_sim_lock_unlock_cb_t cb, void *data)
++{
++	struct sim_data *sd = ofono_sim_get_data(sim);
++	struct cb_data *cbd;
++	struct ipc_sec_pin_status_set *req;
++
++	DBG("");
++
++	req = g_try_new0(struct ipc_sec_pin_status_set, 1);
++	if (!req) {
++		CALLBACK_WITH_FAILURE(cb, data);
++		return;
++	}
++
++	cbd = cb_data_new(cb, data);
++	cbd->user = sd;
++
++	ipc_sec_pin_status_set_setup(req, IPC_SEC_PIN_TYPE_PIN1, (char*) passwd, NULL);
++
++	if(ipc_device_enqueue_message(sd->device, IPC_SEC_SIM_STATUS, IPC_TYPE_SET,
++						req, sizeof(struct ipc_sec_pin_status_set),
++						pin_send_cb, cbd) > 0)
++		return;
++
++	g_free(cbd);
++
++	CALLBACK_WITH_FAILURE(cb, data);
++}
++
++static void read_imsi_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_sim_imsi_cb_t cb = cbd->cb;
++	char imsi[SIM_MAX_IMSI_LENGTH + 1];
++	guint8 len;
++	char *imsi_data;
++
++	len = *((guint8*) data);
++	imsi_data = ((char*) data)  + 1;
++
++	strncpy(imsi, imsi_data, len);
++
++	CALLBACK_WITH_SUCCESS(cb, imsi, cbd->data);
++
++	g_free(cbd);
++}
++
++static void samsungipc_read_imsi(struct ofono_sim *sim,
++				ofono_sim_imsi_cb_t cb, void *data)
++{
++	struct sim_data *sd = ofono_sim_get_data(sim);
++	struct cb_data *cbd;
++
++	cbd = cb_data_new(cb, data);
++
++	DBG("");
++
++	if(ipc_device_enqueue_message(sd->device, IPC_MISC_ME_IMSI, IPC_TYPE_GET,
++						NULL, 0, read_imsi_cb, cbd) > 0)
++		return;
++
++	g_free(cbd);
++
++	CALLBACK_WITH_FAILURE(cb, NULL, data);
++}
++
++static void lock_info_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_sim_pin_retries_cb_t cb = cbd->cb;
++	struct ipc_sec_lock_info_response *resp = data;
++	struct sim_data *sd = cbd->user;
++	struct ipc_sec_lock_info_get *req;
++
++	if (error) {
++		CALLBACK_WITH_FAILURE(cb, NULL, cbd->data);
++		goto done;
++	}
++
++	switch (resp->type) {
++	case IPC_SEC_PIN_TYPE_PIN1:
++		sd->pin_attempts[OFONO_SIM_PASSWORD_SIM_PIN] = resp->attempts;
++
++		req = g_try_new0(struct ipc_sec_lock_info_get, 1);
++		if (!req) {
++			CALLBACK_WITH_FAILURE(cb, NULL, cbd->data);
++			goto done;
++		}
++
++		ipc_sec_lock_info_get_setup(req, IPC_SEC_PIN_TYPE_PIN2);
++
++		if(ipc_device_enqueue_message(sd->device, IPC_SEC_LOCK_INFO, IPC_TYPE_GET,
++						req, sizeof(struct ipc_sec_lock_info_get),
++						lock_info_cb, cbd) > 0)
++			return;
++
++		goto error;
++	case IPC_SEC_PIN_TYPE_PIN2:
++		sd->pin_attempts[OFONO_SIM_PASSWORD_SIM_PIN2] = resp->attempts;
++		break;
++	}
++
++	CALLBACK_WITH_SUCCESS(cb, sd->pin_attempts, cbd->data);
++
++	return;
++
++error:
++	CALLBACK_WITH_FAILURE(cb, NULL, cbd->data);
++done:
++	g_free(cbd);
++}
++
++static void samsungipc_query_pin_retries(struct ofono_sim *sim,
++					ofono_sim_pin_retries_cb_t cb, void *data)
++{
++	struct sim_data *sd = ofono_sim_get_data(sim);
++	struct cb_data *cbd;
++	struct ipc_sec_lock_info_get *req;
++
++	DBG("");
++
++	req = g_try_new0(struct ipc_sec_lock_info_get, 1);
++	if (!req) {
++		CALLBACK_WITH_FAILURE(cb, NULL, data);
++		return;
++	}
++
++	cbd = cb_data_new(cb, data);
++	cbd->user = sd;
++
++	ipc_sec_lock_info_get_setup(req, IPC_SEC_PIN_TYPE_PIN1);
++
++	memset(sd->pin_attempts, 0, sizeof(sd->pin_attempts));
++
++	if(ipc_device_enqueue_message(sd->device, IPC_SEC_LOCK_INFO, IPC_TYPE_GET,
++						req, sizeof(struct ipc_sec_lock_info_get),
++						lock_info_cb, cbd) > 0)
++		return;
++
++	g_free(cbd);
++
++	CALLBACK_WITH_FAILURE(cb, NULL, data);
++}
++
++static void initial_sim_status_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct ofono_sim *sim = user_data;
++	struct ipc_sec_sim_status_response *resp = data;
++
++	if (error) {
++		ofono_sim_remove(sim);
++		return;
++	}
++
++	ofono_sim_register(sim);
++
++	switch (resp->status) {
++	case IPC_SEC_SIM_STATUS_INITIALIZING:
++	case IPC_SEC_SIM_STATUS_SIM_LOCK_REQUIRED:
++	case IPC_SEC_SIM_STATUS_INIT_COMPLETE:
++	case IPC_SEC_SIM_STATUS_PB_INIT_COMPLETE:
++	case IPC_SEC_SIM_STATUS_LOCK_SC:
++	case IPC_SEC_SIM_STATUS_LOCK_FD:
++	case IPC_SEC_SIM_STATUS_LOCK_PN:
++	case IPC_SEC_SIM_STATUS_LOCK_PU:
++	case IPC_SEC_SIM_STATUS_LOCK_PP:
++		ofono_sim_inserted_notify(sim, TRUE);
++		break;
++	case IPC_SEC_SIM_STATUS_CARD_ERROR:
++	case IPC_SEC_SIM_STATUS_CARD_NOT_PRESENT:
++	case IPC_SEC_SIM_STATUS_INSIDE_PF_ERROR:
++		ofono_sim_inserted_notify(sim, FALSE);
++		break;
++	}
++}
++
++static int samsungipc_sim_probe(struct ofono_sim *sim, unsigned int vendor,
++				void *user_data)
++{
++	struct sim_data *sd;
++
++	DBG("");
++
++	sd = g_try_new0(struct sim_data, 1);
++	if (sd == NULL)
++		return -ENOMEM;
++
++	sd->device = user_data;
++
++	ofono_sim_set_data(sim, sd);
++
++	ipc_device_enqueue_message(sd->device, IPC_SEC_SIM_STATUS, IPC_TYPE_GET,
++						NULL, 0, initial_sim_status_cb, sim);
++
++	return 0;
++}
++
++static void samsungipc_sim_remove(struct ofono_sim *sim)
++{
++	struct sim_data *data = ofono_sim_get_data(sim);
++
++	ofono_sim_set_data(sim, NULL);
++
++	if (data == NULL)
++		return;
++
++	g_free(data);
++}
++
++static struct ofono_sim_driver driver = {
++	.name					= "samsungipcmodem",
++	.probe					= samsungipc_sim_probe,
++	.remove					= samsungipc_sim_remove,
++	.query_passwd_state		= samsungipc_query_passwd_state,
++	.query_pin_retries		= samsungipc_query_pin_retries,
++	.send_passwd			= samsungipc_pin_send,
++	.reset_passwd			= samsungipc_send_puk,
++	.lock					= samsungipc_pin_enable,
++	.change_passwd			= samsungipc_change_passwd,
++	.query_locked			= samsungipc_pin_query_enabled,
++	.read_imsi				= samsungipc_read_imsi,
++	.read_file_transparent	= samsungipc_read_binary,
++};
++
++void samsungipc_sim_init(void)
++{
++	ofono_sim_driver_register(&driver);
++}
++
++void samsungipc_sim_exit(void)
++{
++	ofono_sim_driver_unregister(&driver);
++}
+diff --git a/drivers/samsungipcmodem/util.h b/drivers/samsungipcmodem/util.h
+new file mode 100644
+index 00000000..cf053f0f
+--- /dev/null
++++ b/drivers/samsungipcmodem/util.h
+@@ -0,0 +1,57 @@
++/*
++ *
++ *  oFono - Open Source Telephony
++ *
++ *  Copyright (C) 2011-2012  Intel Corporation. All rights reserved.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License version 2 as
++ *  published by the Free Software Foundation.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ */
++
++#include <glib.h>
++
++struct cb_data {
++	void *cb;
++	void *data;
++	void *user;
++};
++
++static inline struct cb_data *cb_data_new(void *cb, void *data)
++{
++	struct cb_data *ret;
++
++	ret = g_new0(struct cb_data, 1);
++	ret->cb = cb;
++	ret->data = data;
++	ret->user = NULL;
++
++	return ret;
++}
++
++#define CALLBACK_WITH_FAILURE(cb, args...)		\
++	do {						\
++		struct ofono_error cb_e;		\
++		cb_e.type = OFONO_ERROR_TYPE_FAILURE;	\
++		cb_e.error = 0;				\
++							\
++		cb(&cb_e, ##args);			\
++	} while (0)					\
++
++#define CALLBACK_WITH_SUCCESS(f, args...)		\
++	do {						\
++		struct ofono_error e;			\
++		e.type = OFONO_ERROR_TYPE_NO_ERROR;	\
++		e.error = 0;				\
++		f(&e, ##args);				\
++	} while (0)
+diff --git a/drivers/samsungipcmodem/voicecall.c b/drivers/samsungipcmodem/voicecall.c
+new file mode 100644
+index 00000000..9c8b5246
+--- /dev/null
++++ b/drivers/samsungipcmodem/voicecall.c
+@@ -0,0 +1,358 @@
++/*
++ *
++ *  oFono - Open Source Telephony
++ *
++ *  Copyright (C) 2012 Simon Busch <morphis at gravedo.de>. All rights reserved.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License version 2 as
++ *  published by the Free Software Foundation.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ */
++
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
++#define _GNU_SOURCE
++#include <string.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <errno.h>
++
++#include <glib.h>
++
++#include <ofono/log.h>
++#include <ofono/modem.h>
++#include <ofono/voicecall.h>
++
++#include "samsungipcmodem.h"
++#include "ipc.h"
++#include "util.h"
++
++/* Amount of ms we wait between call status requests */
++#define CALL_STATUS_POLL_INTERVAL 500
++
++struct voicecall_data {
++	struct ipc_device *device;
++	int dtmf_active;
++	unsigned int status_update_pending;
++};
++
++static void send_dtmf_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_voicecall_cb_t cb = cbd->cb;
++	unsigned char ret;
++
++	if (error) {
++		CALLBACK_WITH_FAILURE(cb, cbd->data);
++		goto done;
++	}
++
++	ret = *((unsigned char*) data);
++	if (!ret) {
++		CALLBACK_WITH_FAILURE(cb, cbd->data);
++		goto done;
++	}
++
++	CALLBACK_WITH_SUCCESS(cb, cbd->data);
++
++done:
++	g_free(cbd);
++}
++
++static void samsungipc_send_dtmf(struct ofono_voicecall *vc, const char *dtmf,
++			ofono_voicecall_cb_t cb, void *data)
++{
++	struct voicecall_data *vd = ofono_voicecall_get_data(vc);
++	struct cb_data *cbd;
++	struct ipc_call_cont_dtmf *reqs;
++	int tone_count;
++	int n;
++
++	DBG("");
++
++	tone_count = strlen(dtmf);
++
++	reqs = g_try_new0(struct ipc_call_cont_dtmf, tone_count);
++	if (!reqs) {
++		CALLBACK_WITH_FAILURE(cb, data);
++		return;
++	}
++
++	cbd = cb_data_new(cb, data);
++
++	for (n = 0; n > tone_count; n++) {
++		reqs[n].state = IPC_CALL_DTMF_STATE_START;
++		reqs[n].tone = dtmf[n];
++	}
++
++	if(ipc_device_enqueue_message(vd->device, IPC_CALL_RELEASE, IPC_TYPE_EXEC,
++						reqs, sizeof(struct ipc_call_cont_dtmf) * tone_count,
++						send_dtmf_cb, cbd) > 0)
++		return;
++
++	CALLBACK_WITH_FAILURE(cb, data);
++	g_free(cbd);
++}
++
++static void common_call_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_voicecall_cb_t cb = cbd->cb;
++	struct ipc_gen_phone_res *resp = data;
++
++	if (error || ipc_gen_phone_res_check(resp) < 0) {
++		CALLBACK_WITH_FAILURE(cb, cbd->data);
++		goto done;
++	}
++
++	CALLBACK_WITH_SUCCESS(cb, cbd->data);
++
++done:
++	g_free(cbd);
++}
++
++static void samsungipc_hangup_active(struct ofono_voicecall *vc,
++				ofono_voicecall_cb_t cb, void *data)
++{
++	struct voicecall_data *vd = ofono_voicecall_get_data(vc);
++	struct cb_data *cbd = cb_data_new(cb, data);
++
++	DBG("");
++
++	if(ipc_device_enqueue_message(vd->device, IPC_CALL_RELEASE, IPC_TYPE_EXEC,
++						NULL, 0, common_call_cb, cbd) > 0)
++		return;
++
++	CALLBACK_WITH_FAILURE(cb, data);
++	g_free(cbd);
++}
++
++static void samsungipc_answer(struct ofono_voicecall *vc,
++				ofono_voicecall_cb_t cb, void *data)
++{
++	struct voicecall_data *vd = ofono_voicecall_get_data(vc);
++	struct cb_data *cbd = cb_data_new(cb, data);
++
++	DBG("");
++
++	if(ipc_device_enqueue_message(vd->device, IPC_CALL_ANSWER, IPC_TYPE_EXEC,
++						NULL, 0, common_call_cb, cbd) > 0)
++		return;
++
++	CALLBACK_WITH_FAILURE(cb, data);
++	g_free(cbd);
++}
++
++static void samsungipc_dial(struct ofono_voicecall *vc,
++			const struct ofono_phone_number *ph,
++			enum ofono_clir_option clir, ofono_voicecall_cb_t cb,
++			void *data)
++{
++	struct voicecall_data *vd = ofono_voicecall_get_data(vc);
++	struct ipc_call_outgoing *req;
++	struct cb_data *cbd;
++
++	DBG("");
++
++	req = g_try_new0(struct ipc_call_outgoing, 1);
++	if (!req) {
++		CALLBACK_WITH_FAILURE(cb, data);
++		return;
++	}
++
++	cbd = cb_data_new(cb, data);
++
++	switch (clir) {
++	case OFONO_CLIR_OPTION_DEFAULT:
++		req->identity = IPC_CALL_IDENTITY_DEFAULT;
++		break;
++	case OFONO_CLIR_OPTION_INVOCATION:
++		req->identity = IPC_CALL_IDENTITY_SHOW;
++		break;
++	case OFONO_CLIR_OPTION_SUPPRESSION:
++		req->identity = IPC_CALL_IDENTITY_HIDE;
++		break;
++	}
++
++	req->type = IPC_CALL_TYPE_VOICE;
++	req->prefix = (ph->type == 145) ? IPC_CALL_PREFIX_INTL : IPC_CALL_PREFIX_NONE;
++	req->length = strlen(ph->number);
++	strncpy((char*) req->number, ph->number, 86);
++
++	if(ipc_device_enqueue_message(vd->device, IPC_CALL_OUTGOING, IPC_TYPE_EXEC,
++						req, sizeof(struct ipc_call_outgoing),
++						common_call_cb, cbd) > 0)
++		return;
++
++	CALLBACK_WITH_FAILURE(cb, data);
++
++	g_free(cbd);
++}
++
++static void call_list_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct ofono_voicecall *vc = user_data;
++	struct voicecall_data *vd = ofono_voicecall_get_data(vc);
++	struct ipc_message_info resp;
++	struct ipc_call_list_entry *entry;
++	struct ofono_call call;
++	char *entry_number;
++	int num_entries;
++	int n;
++
++	DBG("");
++
++	if (error)
++		return;
++
++	resp.data = data;
++	resp.length = length;
++
++	num_entries = ipc_call_list_response_get_num_entries(&resp);
++
++	DBG("Got %i entries", num_entries);
++
++	for (n = 0; n < num_entries; n++) {
++		ofono_call_init(&call);
++
++		entry = ipc_call_list_response_get_entry(&resp, n);
++
++		call.id = entry->idx;
++		call.type = (entry->type == IPC_CALL_TYPE_VOICE) ? 0 : 1;
++		call.direction = (entry->term == IPC_CALL_TERM_MT) ? 0 : 1;
++		call.status = entry->state - 1;
++
++		memset(&call.phone_number.type, 0, OFONO_MAX_PHONE_NUMBER_LENGTH);
++
++		entry_number = ipc_call_list_response_get_entry_number(&resp, n);
++		if (entry_number != NULL) {
++			strncpy(call.phone_number.number, entry_number, OFONO_MAX_CALLER_NAME_LENGTH);
++			call.phone_number.number[entry->number_len] = '\0';
++			call.phone_number.type = (entry->number_len > 0 && call.phone_number.number[0] == '+') ? 145 : 129;
++			g_free(entry_number);
++		}
++
++		DBG("id=%i, type=%i, direction=%i, status=%i, number=%s",
++			call.id, call.type, call.direction, call.status,
++			call.phone_number.number);
++
++		ofono_voicecall_notify(vc, &call);
++	}
++
++	vd->status_update_pending = 0;
++}
++
++static void update_call_status(struct ofono_voicecall *vc)
++{
++	struct voicecall_data *vd = ofono_voicecall_get_data(vc);
++
++	if (vd->status_update_pending)
++		return;
++
++	vd->status_update_pending = 1;
++
++	if(ipc_device_enqueue_message(vd->device, IPC_CALL_LIST, IPC_TYPE_GET,
++						NULL, 0, call_list_cb, vc) > 0)
++		return;
++}
++
++static void notify_call_incoming_cb(uint16_t cmd, void *data, uint16_t length, void *user_data)
++{
++	struct ofono_voicecall *vc = user_data;
++
++	update_call_status(vc);
++}
++
++static void notify_call_status_cb(uint16_t cmd, void *data, uint16_t length, void *user_data)
++{
++	struct ofono_voicecall *vc = user_data;
++	struct ipc_call_status *resp = data;
++
++	DBG("");
++
++	if (resp->state == IPC_CALL_STATE_RELEASED) {
++		// FIXME what are possible values for resp->reason?
++		ofono_voicecall_disconnected(vc, resp->id, OFONO_DISCONNECT_REASON_UNKNOWN, NULL);
++		return;
++	}
++
++	update_call_status(vc);
++}
++
++static gboolean initialization_done_cb(gpointer user_data)
++{
++	struct ofono_voicecall *vc = user_data;
++	struct voicecall_data *vd = ofono_voicecall_get_data(vc);
++
++	ipc_device_add_notifcation_watch(vd->device, IPC_CALL_INCOMING, notify_call_incoming_cb, vc);
++	ipc_device_add_notifcation_watch(vd->device, IPC_CALL_STATUS, notify_call_status_cb, vc);
++	ipc_device_add_notifcation_watch(vd->device, IPC_CALL_RELEASE, notify_call_status_cb, vc);
++	ipc_device_add_notifcation_watch(vd->device, IPC_CALL_ANSWER, notify_call_status_cb, vc);
++	ipc_device_add_notifcation_watch(vd->device, IPC_CALL_OUTGOING, notify_call_status_cb, vc);
++	ipc_device_add_notifcation_watch(vd->device, IPC_CALL_WAITING, notify_call_status_cb, vc);
++
++	ofono_voicecall_register(vc);
++
++	return FALSE;
++}
++
++static int samsungipc_voicecall_probe(struct ofono_voicecall *vc, unsigned int vendor,
++				void *data)
++{
++	struct voicecall_data *vd;
++
++	DBG("");
++
++	vd = g_try_new0(struct voicecall_data, 1);
++	if (vd == NULL)
++		return -ENOMEM;
++
++	vd->device = data;
++	vd->dtmf_active = 0;
++	vd->status_update_pending = 0;
++
++	ofono_voicecall_set_data(vc, vd);
++
++	g_timeout_add_seconds(0, initialization_done_cb, vc);
++
++	return 0;
++}
++
++static void samsungipc_voicecall_remove(struct ofono_voicecall *vc)
++{
++	struct voicecall_data *vd = ofono_voicecall_get_data(vc);
++
++	g_free(vd);
++}
++
++static struct ofono_voicecall_driver driver = {
++	.name			= "samsungipcmodem",
++	.probe			= samsungipc_voicecall_probe,
++	.remove			= samsungipc_voicecall_remove,
++	.dial			= samsungipc_dial,
++	.answer			= samsungipc_answer,
++	.hangup_active	= samsungipc_hangup_active,
++	.send_tones		= samsungipc_send_dtmf,
++};
++
++void samsungipc_voicecall_init(void)
++{
++	ofono_voicecall_driver_register(&driver);
++}
++
++void samsungipc_voicecall_exit(void)
++{
++	ofono_voicecall_driver_unregister(&driver);
++}
+diff --git a/plugins/samsungipc.c b/plugins/samsungipc.c
+new file mode 100644
+index 00000000..b60b91a3
+--- /dev/null
++++ b/plugins/samsungipc.c
+@@ -0,0 +1,414 @@
++/*
++ *
++ *  oFono - Open Source Telephony
++ *
++ *  Copyright (C) 2012 Simon Busch <morphis at gravedo.de>
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License version 2 as
++ *  published by the Free Software Foundation.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ */
++
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
++#include <errno.h>
++#include <unistd.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <stdio.h>
++
++#include <glib.h>
++
++#define OFONO_API_SUBJECT_TO_CHANGE
++#include <ofono/plugin.h>
++#include <ofono/log.h>
++#include <ofono/modem.h>
++#include <ofono/devinfo.h>
++#include <ofono/message-waiting.h>
++#include <ofono/netreg.h>
++#include <ofono/sim.h>
++#include <ofono/phonebook.h>
++#include <ofono/voicecall.h>
++#include <ofono/gprs.h>
++#include <ofono/gprs-context.h>
++#include <ofono/sms.h>
++
++#include "drivers/samsungipcmodem/ipc.h"
++#include "drivers/samsungipcmodem/util.h"
++
++#include <samsung-ipc.h>
++
++struct samsungipc_data {
++	struct ipc_device *device;
++	struct ipc_client *client;
++	ofono_bool_t in_forwarding_mode;
++	uint16_t state;
++	guint power_state_watch;
++};
++
++static void samsungipc_debug(const char *str, void *user_data)
++{
++	const char *prefix = user_data;
++
++	ofono_info("%s%s", prefix, str);
++}
++
++static int samsungipc_probe(struct ofono_modem *modem)
++{
++	struct samsungipc_data *data;
++
++	DBG("%p", modem);
++
++	data = g_try_new0(struct samsungipc_data, 1);
++	if (data == NULL)
++		return -ENOMEM;
++
++	data->in_forwarding_mode = FALSE;
++
++	ofono_modem_set_data(modem, data);
++
++	return 0;
++}
++
++static void samsungipc_remove(struct ofono_modem *modem)
++{
++	struct samsungipc_data *data = ofono_modem_get_data(modem);
++
++	DBG("%p", modem);
++
++	ofono_modem_set_data(modem, NULL);
++
++	g_free(data);
++}
++
++static int connect_socket(const char *address, int port)
++{
++	struct sockaddr_in addr;
++	int sk;
++	int err;
++
++	sk = socket(PF_INET, SOCK_STREAM, 0);
++	if (sk < 0)
++		return -EINVAL;
++
++	memset(&addr, 0, sizeof(addr));
++	addr.sin_family = AF_INET;
++	addr.sin_addr.s_addr = inet_addr(address);
++	addr.sin_port = htons(port);
++
++	err = connect(sk, (struct sockaddr *) &addr, sizeof(addr));
++	if (err < 0) {
++		close(sk);
++		return -errno;
++	}
++
++	return sk;
++}
++
++static int modem_data_read(void *buf, unsigned int size, void *user_data)
++{
++	struct samsungipc_data *data = user_data;
++	int ret, fd;
++
++	fd = ipc_device_get_fd(data->device);
++	if (fd < 0)
++		return -1;
++
++	ret = read(fd, buf, size);
++	if (ret < 0)
++		return -1;
++
++	return ret;
++}
++
++static int modem_data_write(void *buf, unsigned int size, void *user_data)
++{
++	struct samsungipc_data *data = user_data;
++	int ret, fd;
++
++	fd = ipc_device_get_fd(data->device);
++	if (fd < 0)
++		return -1;
++
++	ret = write(fd, buf, size);
++	if (ret < 0)
++		return -1;
++
++	return ret;
++}
++
++static void retrieve_power_state_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct ofono_modem *modem = user_data;
++	struct samsungipc_data *ipcdata = ofono_modem_get_data(modem);
++	uint16_t state;
++
++	if (error) {
++		ofono_error("Received error instead of power state response");
++		return;
++	}
++
++	state = IPC_PWR_R(*((uint16_t*) data));
++
++	switch (state) {
++	case IPC_PWR_R(IPC_PWR_PHONE_STATE_NORMAL):
++		ofono_error("Modem is already in NORMAL power state; thats wrong!");
++		// FIXME shutdown everything here or switch to LPM/perform a modem reset?
++		break;
++	case IPC_PWR_R(IPC_PWR_PHONE_STATE_LPM):
++		ofono_modem_set_powered(modem, TRUE);
++		ipcdata->state = IPC_PWR_PHONE_STATE_LPM;
++		break;
++	}
++}
++
++static void log_handler(const char *message, void *user_data)
++{
++	ofono_debug("IPC: %s", message);
++}
++
++static int samsungipc_enable(struct ofono_modem *modem)
++{
++	struct samsungipc_data *data = ofono_modem_get_data(modem);
++	const char *address;
++	int port, fd;
++
++	DBG("%p", modem);
++
++	data->client = ipc_client_new(IPC_CLIENT_TYPE_FMT);
++	if (getenv("OFONO_IPC_DEBUG"))
++		ipc_client_set_log_handler(data->client, log_handler, data);
++
++	/* if address and port are set we are using a remote device */
++	address = ofono_modem_get_string(modem, "Address");
++	if (address != NULL) {
++		port = ofono_modem_get_integer(modem, "Port");
++		if (port < 0)
++			return -EINVAL;
++
++		data->in_forwarding_mode = TRUE;
++
++		fd = connect_socket(address, port);
++		if (fd < 0)
++			return fd;
++
++		ipc_client_set_io_handlers(data->client, modem_data_read, data,
++							modem_data_write, data);
++
++		ipc_device_set_close_on_unref(data->device, true);
++	}
++	else {
++		ipc_client_create_handlers_common_data(data->client);
++		ipc_client_open(data->client);
++		fd = ipc_client_get_handlers_common_data_fd(data->client);
++
++		if (fd < 0) {
++			ipc_client_close(data->client);
++			ipc_client_destroy_handlers_common_data(data->client);
++			return fd;
++		}
++	}
++
++	data->device = ipc_device_new(fd, data->client);
++	ipc_device_set_debug(data->device, samsungipc_debug, "IPC: ");
++
++	ipc_device_enqueue_message(data->device, IPC_PWR_PHONE_STATE, IPC_TYPE_GET,
++						NULL, 0, retrieve_power_state_cb, modem);
++
++	return -EINPROGRESS;
++}
++
++static int samsungipc_disable(struct ofono_modem *modem)
++{
++	struct samsungipc_data *data = ofono_modem_get_data(modem);
++
++	DBG("%p", modem);
++
++	ipc_client_close(data->client);
++
++	if (data->in_forwarding_mode)
++		ipc_client_destroy_handlers_common_data(data->client);
++
++	ipc_device_unref(data->device);
++
++	return 0;
++}
++
++static void samsungipc_pre_sim(struct ofono_modem *modem)
++{
++	struct samsungipc_data *data = ofono_modem_get_data(modem);
++
++	DBG("%p", modem);
++
++	ofono_devinfo_create(modem, 0, "samsungipcmodem", data->device);
++	ofono_sim_create(modem, 0, "samsungipcmodem", data->device);
++}
++
++static void samsungipc_post_sim(struct ofono_modem *modem)
++{
++	DBG("%p", modem);
++}
++
++static void notify_power_state_cb(uint16_t cmd, void *data, uint16_t length, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	struct samsungipc_data *sid = cbd->user;
++	ofono_modem_online_cb_t cb = cbd->cb;
++
++	CALLBACK_WITH_SUCCESS(cb, cbd->data);
++
++	ipc_device_remove_watch(sid->device, sid->power_state_watch);
++
++	g_free(cbd);
++}
++
++static void set_device_rf_power_state_cb(uint16_t cmd, void *data, uint16_t length, uint8_t error, void *user_data)
++{
++	struct cb_data *cbd = user_data;
++	ofono_modem_online_cb_t cb = cbd->cb;
++	struct samsungipc_data *sid = cbd->user;
++	struct ipc_gen_phone_res *resp = data;
++
++	if (error || ipc_gen_phone_res_check(resp) < 0) {
++		CALLBACK_WITH_FAILURE(cb, cbd->data);
++		g_free(cbd);
++		return;
++	}
++
++	sid->power_state_watch = ipc_device_add_notifcation_watch(sid->device, IPC_PWR_PHONE_STATE,
++														notify_power_state_cb, cbd);
++}
++
++static void set_device_rf_power_state(struct ofono_modem *modem, uint16_t state, struct cb_data *cbd)
++{
++	struct samsungipc_data *sid = ofono_modem_get_data(modem);
++	uint8_t *msg;
++	ofono_modem_online_cb_t cb = cbd->cb;
++
++	msg = g_try_new0(uint8_t, 2);
++	if (!msg)
++		return;
++
++	memcpy(msg, &state, sizeof(uint16_t));
++
++	switch (state) {
++	case IPC_PWR_PHONE_STATE_NORMAL:
++		ipc_device_enqueue_message(sid->device, IPC_PWR_PHONE_STATE, IPC_TYPE_EXEC, msg, 2,
++							set_device_rf_power_state_cb, cbd);
++
++		ofono_debug("Done sending power state change to NORMAL level");
++
++		break;
++	case IPC_PWR_PHONE_STATE_LPM:
++		/* We will not get any response for this request! */
++		ipc_device_enqueue_message(sid->device, IPC_PWR_PHONE_STATE, IPC_TYPE_EXEC, msg, 2,
++							NULL, NULL);
++
++		ofono_debug("Done sending power state change to LPM level");
++
++		/* FIXME maybe retrieving power state from modem to make sure it's set? */
++
++		CALLBACK_WITH_SUCCESS(cb, cbd->data);
++		g_free(cbd);
++
++		break;
++	default:
++		/* Not supported power state */
++		CALLBACK_WITH_FAILURE(cb, cbd->data);
++		g_free(cbd);
++
++		break;
++	}
++}
++
++static void samsungipc_set_online(struct ofono_modem *modem, ofono_bool_t online,
++							ofono_modem_online_cb_t cb, void *user_data)
++{
++	struct samsungipc_data *sid = ofono_modem_get_data(modem);
++	struct cb_data *cbd;
++	uint16_t state;
++
++	state = online ? IPC_PWR_PHONE_STATE_NORMAL : IPC_PWR_PHONE_STATE_LPM;
++
++	cbd = cb_data_new(cb, user_data);
++	cbd->user = sid;
++
++	set_device_rf_power_state(modem, state, cbd);
++}
++
++static void samsungipc_post_online(struct ofono_modem *modem)
++{
++	struct samsungipc_data *data = ofono_modem_get_data(modem);
++	struct ofono_gprs *gprs;
++	struct ofono_gprs_context *gc;
++
++	DBG("%p", modem);
++
++	ofono_netreg_create(modem, 0, "samsungipcmodem", data->device);
++	ofono_voicecall_create(modem, 0, "samsungipcmodem", data->device);
++	gprs = ofono_gprs_create(modem, 0, "samsungipcmodem", data->device);
++	gc = ofono_gprs_context_create(modem, 0, "samsungipcmodem", data->device);
++
++	if (gprs && gc)
++		ofono_gprs_add_context(gprs, gc);
++}
++
++static struct ofono_modem_driver samsungipc_driver = {
++	.name		= "samsungipc",
++	.probe		= samsungipc_probe,
++	.remove		= samsungipc_remove,
++	.enable		= samsungipc_enable,
++	.disable	= samsungipc_disable,
++	.pre_sim	= samsungipc_pre_sim,
++	.post_sim	= samsungipc_post_sim,
++	.set_online	= samsungipc_set_online,
++	.post_online	= samsungipc_post_online,
++};
++
++static int samsungipc_init(void)
++{
++	int err;
++	char *remote;
++	struct ofono_modem *modem;
++
++	err = ofono_modem_driver_register(&samsungipc_driver);
++	if (err < 0)
++		return err;
++
++	remote = getenv("OFONO_SAMSUNGIPC_REMOTE");
++	if (remote != NULL) {
++		modem = ofono_modem_create(NULL, "samsungipc");
++		if (modem == NULL)
++			return -1;
++
++		ofono_modem_set_string(modem, "Address", remote);
++		ofono_modem_set_integer(modem, "Port", 3001);
++
++		ofono_modem_register(modem);
++	}
++
++	return 0;
++}
++
++static void samsungipc_exit(void)
++{
++	ofono_modem_driver_unregister(&samsungipc_driver);
++}
++
++OFONO_PLUGIN_DEFINE(samsungipc, "Samsung IPC driver", VERSION,
++		OFONO_PLUGIN_PRIORITY_DEFAULT, samsungipc_init, samsungipc_exit)
+diff --git a/plugins/samsungmgr.c b/plugins/samsungmgr.c
+new file mode 100644
+index 00000000..750140a8
+--- /dev/null
++++ b/plugins/samsungmgr.c
+@@ -0,0 +1,199 @@
++/*
++ *
++ *  oFono - Open Source Telephony
++ *
++ *  Copyright (C) 2012 Simon Busch <morphis at gravedo.de>
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License version 2 as
++ *  published by the Free Software Foundation.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ */
++
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
++#include <errno.h>
++#include <string.h>
++
++#include <glib.h>
++#include <gdbus.h>
++
++#define OFONO_API_SUBJECT_TO_CHANGE
++#include <ofono/plugin.h>
++#include <ofono/log.h>
++#include <ofono/modem.h>
++#include <ofono/dbus.h>
++
++#define MGR_SERVICE		"org.samsung.modem"
++#define MGR_INTERFACE		MGR_SERVICE ".Manager"
++
++enum modem_status {
++	OFFLINE,
++	INITIALIZING,
++	ONLINE
++};
++
++static guint modem_daemon_watch;
++static guint property_changed_watch;
++static DBusConnection *connection;
++static enum modem_status modem_status = OFFLINE;
++struct ofono_modem *modem;
++
++static void set_modem_power_reply(DBusPendingCall *call, void *user_data)
++{
++	DBusMessage *reply = dbus_pending_call_steal_reply(call);
++	DBusError err;
++
++	dbus_error_init(&err);
++
++	if (dbus_set_error_from_message(&err, reply) == TRUE) {
++		g_printerr("%s: %s\n", err.name, err.message);
++		dbus_error_free(&err);
++	}
++
++	dbus_message_unref(reply);
++}
++
++static int set_modem_power(ofono_bool_t power)
++{
++	DBusMessage *msg;
++	DBusMessageIter iter, value;
++	DBusPendingCall *call;
++	const char *key = "Powered";
++
++	msg = dbus_message_new_method_call(MGR_SERVICE, "/",
++					MGR_INTERFACE, "SetProperty");
++	if (msg == NULL)
++		return -ENOMEM;
++
++	dbus_message_set_auto_start(msg, FALSE);
++
++	dbus_message_iter_init_append(msg, &iter);
++
++	dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &key);
++
++	dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT,
++							DBUS_TYPE_BOOLEAN_AS_STRING, &value);
++	dbus_message_iter_append_basic(&value, DBUS_TYPE_BOOLEAN, &power);
++	dbus_message_iter_close_container(&iter, &value);
++
++	if (dbus_connection_send_with_reply(connection, msg, &call, -1) == FALSE) {
++		dbus_message_unref(msg);
++		return -EIO;
++	}
++
++	dbus_message_unref(msg);
++
++	if (call == NULL)
++		return -EINVAL;
++
++	dbus_pending_call_set_notify(call, set_modem_power_reply, NULL, NULL);
++
++	dbus_pending_call_unref(call);
++
++	return 0;
++}
++
++static void modem_status_changed(const char *status)
++{
++	switch (modem_status) {
++		case OFFLINE:
++			if(g_str_equal(status, "online") == TRUE) {
++				modem = ofono_modem_create(NULL, "samsungipc");
++				if (modem == NULL) {
++					ofono_error("Could not create modem");
++					return;
++				}
++				DBG("registering samsung ipc modem ...");
++				ofono_modem_register(modem);
++				modem_status = ONLINE;
++			}
++			break;
++		case ONLINE:
++			if (g_str_equal(status, "offline") == TRUE) {
++				DBG("Samsung modem unregistering");
++				ofono_modem_remove(modem);
++				modem = NULL;
++				modem_status = OFFLINE;
++			}
++			break;
++		default:
++			break;
++	}
++}
++
++static gboolean property_changed(DBusConnection *conn,
++					DBusMessage *message, void *user_data)
++{
++	DBusMessageIter iter, value;
++	const char *key, *status;
++
++	if (dbus_message_iter_init(message, &iter) == FALSE)
++		return TRUE;
++
++	dbus_message_iter_get_basic(&iter, &key);
++
++	dbus_message_iter_next(&iter);
++	dbus_message_iter_recurse(&iter, &value);
++
++	if (g_str_equal(key, "Status") == TRUE) {
++		dbus_message_iter_get_basic(&value, &status);
++		modem_status_changed(status);
++	}
++
++	return TRUE;
++}
++
++static void mgr_connect(DBusConnection *conn, void *user_data)
++{
++	property_changed_watch = g_dbus_add_signal_watch(conn,
++						MGR_SERVICE, NULL,
++						MGR_INTERFACE,
++						"PropertyChanged",
++						property_changed,
++						NULL, NULL);
++
++	// FIXME check wether modem is already powered up
++
++	set_modem_power(TRUE);
++}
++
++static void mgr_disconnect(DBusConnection *conn, void *user_data)
++{
++	g_dbus_remove_watch(conn, property_changed_watch);
++	property_changed_watch = 0;
++}
++
++static int samsungmgr_init(void)
++{
++	connection = ofono_dbus_get_connection();
++
++	modem_daemon_watch = g_dbus_add_service_watch(connection, MGR_SERVICE,
++				mgr_connect, mgr_disconnect, NULL, NULL);
++
++	return 0;
++}
++
++static void samsungmgr_exit(void)
++{
++	set_modem_power(FALSE);
++
++	g_dbus_remove_watch(connection, modem_daemon_watch);
++
++	if (property_changed_watch > 0)
++		g_dbus_remove_watch(connection, property_changed_watch);
++}
++
++OFONO_PLUGIN_DEFINE(samsungmgr, "Samsung Modem Init Daemon detection", VERSION,
++			OFONO_PLUGIN_PRIORITY_DEFAULT, samsungmgr_init, samsungmgr_exit)
