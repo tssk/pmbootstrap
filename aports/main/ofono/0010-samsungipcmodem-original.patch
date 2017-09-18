@@ -1740,7 +1740,7 @@ index 00000000..2132c15d
 +}
 diff --git a/drivers/samsungipcmodem/samsungipcmodem.c b/drivers/samsungipcmodem/samsungipcmodem.c
 new file mode 100644
-index 00000000..92cbb356
+index 00000000..69c2a41a
 --- /dev/null
 +++ b/drivers/samsungipcmodem/samsungipcmodem.c
 @@ -0,0 +1,53 @@
@@ -1781,7 +1781,7 @@ index 00000000..92cbb356
 +	samsungipc_netreg_init();
 +	samsungipc_voicecall_init();
 +	samsungipc_gprs_init();
-+	samsungipc_gprs_context_init();
++	samsungipc_gprs_context_exit();
 +	return 0;
 +}
 +

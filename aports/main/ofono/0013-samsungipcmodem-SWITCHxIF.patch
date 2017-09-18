@@ -1,0 +1,24 @@
+diff --git a/plugins/samsungipc.c b/plugins/samsungipc.c
+index 1430c510..abe04fca 100644
+--- a/plugins/samsungipc.c
++++ b/plugins/samsungipc.c
+@@ -165,15 +165,14 @@ static void retrieve_power_state_cb(uint16_t cmd, void *data, uint16_t length, u
+ 
+ 	state = IPC_PWR_R(*((uint16_t*) data));
+ 
+-	switch (state) {
+-	case IPC_PWR_R(IPC_PWR_PHONE_STATE_REQUEST_NORMAL):
++	if (state == IPC_PWR_R(IPC_PWR_PHONE_STATE_REQUEST_NORMAL)) {
+ 		ofono_error("Modem is already in NORMAL power state; thats wrong!");
+ 		// FIXME shutdown everything here or switch to LPM/perform a modem reset?
+-		break;
+-	case IPC_PWR_R(IPC_PWR_PHONE_STATE_REQUEST_LPM):
++	}
++
++	if (state == IPC_PWR_R(IPC_PWR_PHONE_STATE_REQUEST_LPM)) {
+ 		ofono_modem_set_powered(modem, TRUE);
+ 		ipcdata->state = IPC_PWR_PHONE_STATE_REQUEST_LPM;
+-		break;
+ 	}
+ }
+ 

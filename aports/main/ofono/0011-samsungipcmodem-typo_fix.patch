@@ -1,0 +1,13 @@
+diff --git a/drivers/samsungipcmodem/samsungipcmodem.c b/drivers/samsungipcmodem/samsungipcmodem.c
+index 69c2a41a..92cbb356 100644
+--- a/drivers/samsungipcmodem/samsungipcmodem.c
++++ b/drivers/samsungipcmodem/samsungipcmodem.c
+@@ -35,7 +35,7 @@ static int samsungipcmodem_init(void)
+ 	samsungipc_netreg_init();
+ 	samsungipc_voicecall_init();
+ 	samsungipc_gprs_init();
+-	samsungipc_gprs_context_exit();
++	samsungipc_gprs_context_init();
+ 	return 0;
+ }
+ 

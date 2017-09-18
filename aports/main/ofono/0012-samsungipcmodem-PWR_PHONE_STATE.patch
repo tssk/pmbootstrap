@@ -1,0 +1,47 @@
+diff --git a/plugins/samsungipc.c b/plugins/samsungipc.c
+index b60b91a3..1430c510 100644
+--- a/plugins/samsungipc.c
++++ b/plugins/samsungipc.c
+@@ -166,13 +166,13 @@ static void retrieve_power_state_cb(uint16_t cmd, void *data, uint16_t length, u
+ 	state = IPC_PWR_R(*((uint16_t*) data));
+
+ 	switch (state) {
+-	case IPC_PWR_R(IPC_PWR_PHONE_STATE_NORMAL):
++	case IPC_PWR_R(IPC_PWR_PHONE_STATE_REQUEST_NORMAL):
+ 		ofono_error("Modem is already in NORMAL power state; thats wrong!");
+ 		// FIXME shutdown everything here or switch to LPM/perform a modem reset?
+ 		break;
+-	case IPC_PWR_R(IPC_PWR_PHONE_STATE_LPM):
++	case IPC_PWR_R(IPC_PWR_PHONE_STATE_REQUEST_LPM):
+ 		ofono_modem_set_powered(modem, TRUE);
+-		ipcdata->state = IPC_PWR_PHONE_STATE_LPM;
++		ipcdata->state = IPC_PWR_PHONE_STATE_REQUEST_LPM;
+ 		break;
+ 	}
+ }
+@@ -307,14 +307,14 @@ static void set_device_rf_power_state(struct ofono_modem *modem, uint16_t state,
+ 	memcpy(msg, &state, sizeof(uint16_t));
+
+ 	switch (state) {
+-	case IPC_PWR_PHONE_STATE_NORMAL:
++	case IPC_PWR_PHONE_STATE_REQUEST_NORMAL:
+ 		ipc_device_enqueue_message(sid->device, IPC_PWR_PHONE_STATE, IPC_TYPE_EXEC, msg, 2,
+ 							set_device_rf_power_state_cb, cbd);
+
+ 		ofono_debug("Done sending power state change to NORMAL level");
+
+ 		break;
+-	case IPC_PWR_PHONE_STATE_LPM:
++	case IPC_PWR_PHONE_STATE_REQUEST_LPM:
+ 		/* We will not get any response for this request! */
+ 		ipc_device_enqueue_message(sid->device, IPC_PWR_PHONE_STATE, IPC_TYPE_EXEC, msg, 2,
+ 							NULL, NULL);
+@@ -343,7 +343,7 @@ static void samsungipc_set_online(struct ofono_modem *modem, ofono_bool_t online
+ 	struct cb_data *cbd;
+ 	uint16_t state;
+
+-	state = online ? IPC_PWR_PHONE_STATE_NORMAL : IPC_PWR_PHONE_STATE_LPM;
++	state = online ? IPC_PWR_PHONE_STATE_REQUEST_NORMAL : IPC_PWR_PHONE_STATE_REQUEST_LPM;
+
+ 	cbd = cb_data_new(cb, user_data);
+ 	cbd->user = sid;
