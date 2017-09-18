@@ -24,7 +24,7 @@ import pmb.chroot
 import pmb.helpers.run
 
 
-def zap(args, confirm=True, packages=False, http=False, mismatch_bins=False):
+def zap(args, confirm=True, packages=False, http=False, mismatch_bins=False, distfiles=False):
     """
     Shutdown everything inside the chroots (e.g. distccd, adb), umount
     everything and then safely remove folders from the work-directory.
@@ -33,6 +33,7 @@ def zap(args, confirm=True, packages=False, http=False, mismatch_bins=False):
     :arg http: Clear the http cache (used e.g. for the initial apk download)
     :arg mismatch_bins: Remove the packages, that have a different version
                         compared to what is in the abuilds folder.
+    :arg distfiles: Clear the downloaded files cache
 
     NOTE: This function gets called in pmb/config/init.py, with only args.work
     and args.device set!
@@ -49,6 +50,8 @@ def zap(args, confirm=True, packages=False, http=False, mismatch_bins=False):
         patterns += ["packages"]
     if http:
         patterns += ["cache_http"]
+    if distfiles:
+        patterns += ["cache_distfiles"]
 
     # Delete everything matching the patterns
     for pattern in patterns:
@@ -65,8 +68,7 @@ def zap(args, confirm=True, packages=False, http=False, mismatch_bins=False):
 
 
 def binaries(args):
-    for arch_dir in os.scandir(os.path.realpath(args.work + "/packages/")):
-        arch = arch_dir.name
+    for arch in os.listdir(os.path.realpath(args.work + "/packages/")):
         arch_pkg_path = os.path.realpath(args.work) + "/packages/" + arch
         bin_apks = pmb.parse.apkindex.parse(args, arch_pkg_path + "/APKINDEX.tar.gz")
         for bin_apk in bin_apks:

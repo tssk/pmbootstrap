@@ -50,8 +50,12 @@ def arguments_flasher(subparser):
     for action in [boot, flash_kernel]:
         action.add_argument("--flavor", default=None)
 
+    # Flash system
+    flash_system = sub.add_parser("flash_system", help="flash the system partition")
+    flash_system.add_argument("--partition", default=None, help="partition to flash"
+                              " the system image")
+
     # Actions without extra arguments
-    sub.add_parser("flash_system", help="flash the system partition")
     sub.add_parser("sideload", help="sideload recovery zip")
     sub.add_parser("list_flavors", help="list installed kernel flavors" +
                    " inside the device rootfs chroot on this computer")
@@ -168,6 +172,8 @@ def arguments():
     zap.add_argument("-m", "--mismatch-bins", action="store_true", help="also delete"
                      " binary packages that are newer than the corresponding"
                      " package in aports")
+    zap.add_argument("-d", "--distfiles", action="store_true", help="also delete"
+                     " downloaded files cache")
 
     # Action: stats
     stats = sub.add_parser("stats", help="show ccache stats")
@@ -243,6 +249,12 @@ def arguments():
     for action in [checksum, build, aportgen]:
         action.add_argument("packages", nargs="+")
 
+    # Action: kconfig_check
+    kconfig_check = sub.add_parser("kconfig_check", help="check, whether all"
+                                   " the necessary options are"
+                                   " enabled/disabled in the kernel config")
+    kconfig_check.add_argument("packages", nargs="*")
+
     # Action: challenge
     challenge = sub.add_parser("challenge",
                                help="verify, that all files in an apk can be"
@@ -274,6 +286,7 @@ def arguments():
     qemu.add_argument("--arch", choices=["aarch64", "arm", "x86_64"],
                       help="emulate a different architecture")
     qemu.add_argument("--cmdline", help="override kernel commandline")
+    qemu.add_argument("--image-size", help="set system image size (e.g. 2048M or 2G)")
     qemu.add_argument("-m", "--memory", type=int, default=1024,
                       help="guest RAM (default: 1024)")
     qemu.add_argument("-p", "--port", type=int, default=2222,
