@@ -1,0 +1,10 @@
+--- a/libril/ril.cpp
++++ b/libril/ril.cpp
+@@ -47,6 +47,7 @@
+ #include <netinet/in.h>
+ #include <cutils/properties.h>
+ #include <RilSapSocket.h>
++#include <sys/signal.h>
+
+ extern "C" void
+ RIL_onRequestComplete(RIL_Token t, RIL_Errno e, void *response, size_t responselen);

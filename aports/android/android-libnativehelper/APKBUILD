@@ -24,4 +24,4 @@ package() {
 
 }
 
-sha512sums="a5bfea0c175e40600e32435fa5adb09660d29c4bf78c883b46f5f4448d38bea49dd4bb6ba4de169f768e5476639f3adacd5126d951fc7f041d8ebad29a855343  android_platform_libnativehelper-7.0.0_r34.tar.gz"
+sha512sums="a993ca109a18e6c79df7436624f97fdef6b91ef669416094ccebd86bf68c4b6aa985866933a9b0e33e37c2e00007c0574190c9ae291f17e5a9b457b8e6953636  android_platform_libnativehelper-7.0.0_r34.tar.gz"

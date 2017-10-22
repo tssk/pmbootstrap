@@ -1,5 +1,5 @@
 CXX        := g++
-CXXFLAGS   := -std=c++14 -Wall -g -I../include -I/usr/include/android
+CXXFLAGS   := -std=c++14 -Wall -g -I../include -I/usr/include/android -I./
 LIBS       :=
 
 SOURCES	:= ${wildcard *.cpp}

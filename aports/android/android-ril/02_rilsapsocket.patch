@@ -1,0 +1,11 @@
+--- a/libril/RilSapSocket.h.orig
++++ b/libril/RilSapSocket.h
+@@ -19,7 +19,7 @@
+ #define RIL_SHLIB
+ #include "telephony/ril.h"
+ #include "RilSocket.h"
+-#include <hardware/ril/librilutils/proto/sap-api.pb.h>
++#include <../librilutils/proto/sap-api.pb.h>
+
+ /**
+  * RilSapSocket is a derived class, derived from the RilSocket abstract
