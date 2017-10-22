@@ -26,11 +26,14 @@ sh_files="
 	./aports/main/postmarketos-base/firmwareload.sh
 	./aports/main/postmarketos-mkinitfs/init.sh.in
 	./aports/main/postmarketos-mkinitfs/init_functions.sh
+	./aports/main/postmarketos-update-kernel/update-kernel.sh
 	./aports/main/postmarketos-android-recovery-installer/build_zip.sh
 	./aports/main/postmarketos-android-recovery-installer/pmos_install
 	./aports/main/postmarketos-android-recovery-installer/pmos_install_functions
 	./aports/main/postmarketos-android-recovery-installer/pmos_setpw
 	./aports/main/postmarketos-android-recovery-installer/update-binary
+	./aports/main/postmarketos-ui-hildon/postmarketos-ui-hildon.post-install
+	$(find . -path './aports/main/postmarketos-ui-hildon/*.sh')
 	$(find . -name '*.trigger')
 "
 for file in ${sh_files}; do

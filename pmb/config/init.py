@@ -23,6 +23,7 @@ import os
 import pmb.config
 import pmb.helpers.cli
 import pmb.helpers.devices
+import pmb.helpers.run
 import pmb.helpers.ui
 import pmb.chroot.zap
 import pmb.parse.deviceinfo
@@ -41,7 +42,14 @@ def ask_for_work_path(args):
         try:
             ret = os.path.expanduser(pmb.helpers.cli.ask(
                 args, "Work path", None, args.work, False))
-            os.makedirs(ret, 0o700, True)
+
+            # Create the folder with a version file
+            if not os.path.exists(ret):
+                os.makedirs(ret, 0o700, True)
+                with open(ret + "/version", "w") as handle:
+                    handle.write(pmb.config.work_version + "\n")
+
+            # Make sure, that we can write into it
             os.makedirs(ret + "/cache_http", 0o700, True)
             return ret
         except OSError:
@@ -52,7 +60,9 @@ def ask_for_work_path(args):
 def ask_for_ui(args):
     ui_list = pmb.helpers.ui.list(args)
     logging.info("Available user interfaces (" +
-                 str(len(ui_list) - 1) + "): " + ", ".join(ui_list))
+                 str(len(ui_list) - 1) + "): ")
+    for ui, description in ui_list.items():
+        logging.info("* " + ui + ": " + description)
     while True:
         ret = pmb.helpers.cli.ask(args, "User interface", None, args.ui, True)
         if ret in ui_list:
@@ -79,6 +89,30 @@ def ask_for_keymaps(args, device):
                       " one from the list above.")
 
 
+def ask_for_timezone(args):
+    localtimes = ["/etc/zoneinfo/localtime", "/etc/localtime"]
+    zoneinfo_path = "/usr/share/zoneinfo/"
+    for localtime in localtimes:
+        if not os.path.exists(localtime):
+            continue
+        tz = ""
+        if os.path.exists(localtime):
+            tzpath = os.path.realpath(localtime)
+            tzpath = tzpath.rstrip()
+            if os.path.exists(tzpath):
+                try:
+                    _, tz = tzpath.split(zoneinfo_path)
+                except:
+                    pass
+        if tz:
+            logging.info("Your host timezone: " + tz)
+            if pmb.helpers.cli.confirm(args, "Use this timezone instead of GMT?",
+                                       default="y"):
+                return tz
+    logging.info("WARNING: Unable to determine timezone configuration on host, using GMT.")
+    return "GMT"
+
+
 def init(args):
     cfg = pmb.config.load(args)
 
@@ -97,6 +131,10 @@ def init(args):
     if device_exists:
         cfg["pmbootstrap"]["keymap"] = ask_for_keymaps(args, device=cfg["pmbootstrap"]["device"])
 
+    # Username
+    cfg["pmbootstrap"]["user"] = pmb.helpers.cli.ask(args, "Username", None,
+                                                     args.user, False,
+                                                     "[a-z_][a-z0-9_-]*")
     # UI and work folder
     cfg["pmbootstrap"]["ui"] = ask_for_ui(args)
     cfg["pmbootstrap"]["work"] = ask_for_work_path(args)
@@ -122,6 +160,9 @@ def init(args):
     cfg["pmbootstrap"]["extra_packages"] = pmb.helpers.cli.ask(args, "Extra packages",
                                                                None, args.extra_packages,
                                                                validation_regex="^(|[-.+\w\s]+(?:,[-.+\w\s]*)*)$")
+
+    # Configure timezone info
+    cfg["pmbootstrap"]["timezone"] = ask_for_timezone(args)
 
     # Do not save aports location to config file
     del cfg["pmbootstrap"]["aports"]

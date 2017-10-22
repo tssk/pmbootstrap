@@ -2,8 +2,8 @@
 # Generator: pmbootstrap aportgen musl-armhf
 
 pkgname=musl-armhf
-pkgver=1.1.16
-pkgrel=20
+pkgver=1.1.17
+pkgrel=1
 subpackages="musl-dev-armhf:package_dev"
 
 _arch="armhf"
@@ -46,5 +46,5 @@ package_dev() {
     done
 }
 
-sha512sums="a52d650127eda2c035f66fe04c7486f96f711adad991ec47d7b7d135b2f67e5f0367e54b1e91db3783784c8f257a9b4cf71ba12cf631398d1846e22d1fba501f  musl-1.1.16-r20-armhf.apk
-e25183aca85c71d56c67b256dde8b66b02c49fbde3933e8acc18f67b299464615f6ff7e9f8e6a4dd65fac7cd9a810f0687f87130c24e2a353c894262340ac5a0  musl-dev-1.1.16-r20-armhf.apk"
+sha512sums="ab422e1e4314c253ef40db254068a23627c80b4e362938272b80828d2e21ebaad1063ace103435ea59c6a3e9a99897c90bb214a27679b02363d15bc62cd04adf  musl-1.1.17-r1-armhf.apk
+e7a3a64e1829fb97b8ff55784ca398b48238a288e10adf1a117580b9462d7501cace27b54a35cfb05a961e7265843f4ab2b7e476bbbd61654daf25452b3ec3f1  musl-dev-1.1.17-r1-armhf.apk"

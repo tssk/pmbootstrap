@@ -12,10 +12,17 @@ if test -z "${XDG_RUNTIME_DIR}"; then
 
 	# Weston autostart on tty1 (Autologin on tty1 is enabled in
 	# /etc/inittab by postmarketos-base post-install.hook)
-	if [ $(tty) = "/dev/tty1" ]; then
-        if test -n "${deviceinfo_weston_pixman_type}"; then
-            WESTON_OPTS=" --pixman-type=${deviceinfo_weston_pixman_type}"
-        fi
+	if [ "$(id -u)" = "1000" ] && [ $(tty) = "/dev/tty1" ]; then
+
+		# Find right weston.ini
+		cfg="/etc/xdg/weston/weston.ini"
+		[ -e "$cfg" ] || cfg="$cfg.default"
+		WESTON_OPTS="-c $cfg"
+
+		# Weston "red screen bug" workaround
+		if test -n "${deviceinfo_weston_pixman_type}"; then
+			WESTON_OPTS="${WESTON_OPTS} --pixman-type=${deviceinfo_weston_pixman_type}"
+		fi
 
 		# #633: Weston doesn't support autostarting applications (yet), so
 		# we try to run postmarketos-demos for 10 seconds, until it succeeds.
@@ -27,7 +34,7 @@ if test -z "${XDG_RUNTIME_DIR}"; then
 		) &
 
 
-		weston ${WESTON_OPTS} >/tmp/weston.log 2>&1
+		weston-launch -- ${WESTON_OPTS} 2>&1 | logger -t "$(whoami):weston"
 
 		# In case of failure, restart after 1s
 		sleep 1

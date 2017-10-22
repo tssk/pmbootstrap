@@ -30,7 +30,7 @@ from pmb.config.save import save
 #
 # Exported variables (internal configuration)
 #
-version = "0.2.0"
+version = "0.3.0"
 pmb_src = os.path.normpath(os.path.realpath(__file__) + "/../../..")
 apk_keys_path = pmb_src + "/keys"
 
@@ -38,6 +38,11 @@ apk_keys_path = pmb_src + "/keys"
 # (which may contain a vulnerable apk/libressl, and allows an attacker to
 # exploit the system!)
 apk_tools_static_min_version = "2.7.2-r0"
+
+# Version of the work folder (as asked during 'pmbootstrap init'). Increase
+# this number, whenever migration is required and provide the migration code,
+# see migrate_work_folder()).
+work_version = "1"
 
 # Config file/commandline default values
 # $WORK gets replaced with the actual value for args.work (which may be
@@ -56,7 +61,9 @@ defaults = {
     "work": os.path.expanduser("~") + "/.local/var/pmbootstrap",
     "port_distccd": "33632",
     "ui": "weston",
+    "user": "user",
     "keymap": "",
+    "timezone": "GMT",
 
     # aes-xts-plain64 would be better, but this is not supported on LineageOS
     # kernel configs
@@ -97,12 +104,21 @@ chroot_host_path = os.environ["PATH"] + ":/usr/sbin/"
 chroot_mount_bind = {
     "/proc": "/proc",
     "$WORK/cache_apk_$ARCH": "/var/cache/apk",
-    "$WORK/cache_ccache_$ARCH": "/home/user/.ccache",
+    "$WORK/cache_ccache_$ARCH": "/mnt/pmbootstrap-ccache",
     "$WORK/cache_distfiles": "/var/cache/distfiles",
-    "$WORK/cache_git": "/home/user/git",
-    "$WORK/config_abuild": "/home/user/.abuild",
+    "$WORK/cache_git": "/mnt/pmbootstrap-git",
+    "$WORK/config_abuild": "/mnt/pmbootstrap-abuild-config",
     "$WORK/config_apk_keys": "/etc/apk/keys",
-    "$WORK/packages": "/home/user/packages/user",
+    "$WORK/packages": "/mnt/pmbootstrap-packages",
+}
+
+# Building chroots (all chroots, except for the rootfs_ chroot) get symlinks in
+# the "pmos" user's home folder pointing to mountfolders from above.
+chroot_home_symlinks = {
+    "/mnt/pmbootstrap-abuild-config": "/home/pmos/.abuild",
+    "/mnt/pmbootstrap-ccache": "/home/pmos/.ccache",
+    "/mnt/pmbootstrap-git": "/home/pmos/git",
+    "/mnt/pmbootstrap-packages": "/home/pmos/packages/pmos",
 }
 
 # The package alpine-base only creates some device nodes. Specify here, which
@@ -136,6 +152,7 @@ build_cross_native = ["linux-*"]
 
 # Necessary kernel config options
 necessary_kconfig_options = {
+    "ANDROID_PARANOID_NETWORK": False,
     "DEVTMPFS": True,
     "DEVTMPFS_MOUNT": False,
     "DM_CRYPT": True,
@@ -155,6 +172,7 @@ apkbuild_attributes = {
     "makedepends": {"array": True},
     "options": {"array": True},
     "pkgname": {"array": False},
+    "pkgdesc": {"array": False},
     "pkgrel": {"array": False},
     "pkgver": {"array": False},
     "subpackages": {"array": True},

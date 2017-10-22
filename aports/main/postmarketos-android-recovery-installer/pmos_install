@@ -56,11 +56,11 @@ ui_print "Entering working directory..."
 cd "$WORKING_DIR"
 ui_print "Extracting files..."
 busybox unzip -o "$ZIP" -x rootfs.tar.gz
-mkdir /lib
+mkdir -p /lib
 ui_print "Symlinking .so files to /lib/..."
-ln -s "$WORKING_DIR"/lib/* /lib/
+ln -sf "$WORKING_DIR"/lib/* /lib/
 ui_print "Symlinking block devices..."
-ln -s /dev/block/* /dev/
+ln -sf /dev/block/* /dev/
 ui_print "Extracting partition table..."
 extract_partition_table
 ui_print "Unmounting /$INSTALL_PARTITION..."
@@ -70,6 +70,7 @@ ui_print "Creating partition table on $INSTALL_DEVICE..."
 partition_install_device || :
 if [ "$FDE" = "true" ]
 then
+	[ -e /dev/mapper/pm_crypt ] && cryptsetup close pm_crypt
 	ui_print "Generating temporary keyfile with random data..."
 	busybox dd bs=512 count=4 if=/dev/urandom of="$WORKING_DIR"/lukskey
 	ui_print "Initializing LUKS device..."
@@ -77,12 +78,12 @@ then
 	ui_print "Opening LUKS partition..."
 	cryptsetup luksOpen -d "$WORKING_DIR"/lukskey "$ROOT_PARTITION" pm_crypt
 	ui_print "Formatting LUKS partition..."
-	make_ext4fs -L 'pmOS_root' /dev/mapper/pm_crypt
+	mkfs.ext4 -L 'pmOS_root' /dev/mapper/pm_crypt
 	ui_print "Mounting LUKS partition..."
 	mount -t ext4 -rw /dev/mapper/pm_crypt /"$INSTALL_PARTITION"
 else
 	ui_print "Formatting root partition..."
-	make_ext4fs -L 'pmOS_root' "$ROOT_PARTITION"
+	mkfs.ext4 -L 'pmOS_root' "$ROOT_PARTITION"
 	ui_print "Mounting root partition..."
 	mount -t ext4 -rw "$ROOT_PARTITION" /"$INSTALL_PARTITION"
 fi
@@ -93,7 +94,7 @@ mkdir /"$INSTALL_PARTITION"/boot
 mount -t ext2 -rw "$PMOS_BOOT" /"$INSTALL_PARTITION"/boot || {
 	ui_print "Failed to format/mount ext2 partition."
 	ui_print "Trying ext4..."
-	make_ext4fs -L 'pmOS_boot' "$PMOS_BOOT"
+	mkfs.ext4 -L 'pmOS_boot' "$PMOS_BOOT"
 	mount -t ext4 -rw "$PMOS_BOOT" /"$INSTALL_PARTITION"/boot
 }
 ui_print "Installing rootfs..."
@@ -115,7 +116,7 @@ fi
 if [ "$FDE" = "true" ]
 then
 	ui_print "Creating a symlink for password setting script in /sbin/..."
-	ln -s "$WORKING_DIR"/bin/pmos_setpw /sbin/
+	ln -sf "$WORKING_DIR"/bin/pmos_setpw /sbin/
 	ui_print "Do not forget to add a password to the LUKS partition!"
 	ui_print "Run the command: pmos_setpw from the terminal/adb shell!"
 fi
