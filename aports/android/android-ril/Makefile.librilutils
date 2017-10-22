@@ -2,12 +2,12 @@ CC := gcc
 CFLAGS := -Wall -I../include/ -I. -fPIC
 
 PBSRC := ${wildcard proto/*.proto}
-SRC := ${wildcard *.c} $(PBSRC:%.proto=%.pb-c.c)
+SRC := ${wildcard *.c} $(PBSRC:%.proto=%.pb.c)
 OBJ := $(SRC:%.c=%.o)
 
 all: librilutils.so.1
 
-%.pb-c.c: %.proto
+%.pb.c: %.proto
 	$(info PROTO $<)
 	@protoc --nanopb_out=. $<
 
@@ -22,5 +22,4 @@ librilutils.so.1: $(OBJ) $(PBOBJ)
 .PHONY: clean
 
 clean:
-	-rm -v *.o *.so proto/*.pb-c.*
-
+	-rm -v *.o *.so proto/*.pb.*

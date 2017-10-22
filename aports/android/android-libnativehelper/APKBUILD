@@ -1,0 +1,27 @@
+pkgname=android-libnativehelper
+pkgver=7.0.0_r34
+pkgrel=0
+pkgdesc="Support functions for Android's class libraries"
+url="https://android.googlesource.com/platform/libnativehelper/"
+arch="all"
+license="APACHE2"
+depends=""
+makedepends=""
+options="!check"
+source="android_platform_libnativehelper-$pkgver.tar.gz::https://android.googlesource.com/platform/libnativehelper/+archive/ff4323214ea24e67cdbd4a7f2445af48d90da342.tar.gz"
+subpackages="$pkgname-dev"
+builddir="$srcdir"
+
+package() {
+
+	# TODO This is not right but I do not now how to unpack it to folder
+
+	mkdir -p "${pkgdir}/usr/include/android/"
+
+	# binder Header files
+	cp -r "${srcdir}/include/nativehelper/" \
+		"${pkgdir}/usr/include/android/"
+
+}
+
+sha512sums="a5bfea0c175e40600e32435fa5adb09660d29c4bf78c883b46f5f4448d38bea49dd4bb6ba4de169f768e5476639f3adacd5126d951fc7f041d8ebad29a855343  android_platform_libnativehelper-7.0.0_r34.tar.gz"

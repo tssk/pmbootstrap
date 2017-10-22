@@ -1,0 +1,31 @@
+pkgname=android-native
+pkgver=7.0.0_r34
+pkgrel=0
+pkgdesc="android / platform / frameworks / native"
+url="https://android.googlesource.com/platform/frameworks/native/"
+arch="all"
+license="APACHE2"
+depends=""
+makedepends=""
+options="!check"
+source="
+	android_platform_frameworks_native-$pkgver.tar.gz::https://android.googlesource.com/platform/frameworks/native/+archive/9726a8d5cdb9508ec68449a494e6257201ae7576.tar.gz
+	01_parcel_h.patch
+"
+subpackages="$pkgname-dev"
+builddir="$srcdir"
+
+package() {
+
+	# TODO This is not right but I do not now how to unpack it to folder
+
+	mkdir -p "${pkgdir}/usr/include/android/"
+
+	# binder Header files
+	cp -r "${srcdir}/include/binder" \
+		"${pkgdir}/usr/include/android/"
+
+}
+
+sha512sums="4771ebf31abf9c7a6c2212379ebf8732fc6170ad321cc8bafbb299e3089ea6362b9eb25d5bd6e432ea250d52912992c59a0d2a26d4bb5227578f16a40a022c44  android_platform_frameworks_native-7.0.0_r34.tar.gz
+753045d91d7d001fc11d2c3c5d273b1e28f02b17af8482775fa9301504d6c3cf173c0da71e6f13e36cee58fc282230f8fb5b3661ca010ec66daad88891da48ec  01_parcel_h.patch"

@@ -33,6 +33,18 @@ package() {
 	mkdir -p "${pkgdir}/usr/include/android/"
 	cp -r "${srcdir}/platform_system_core-android-${pkgver}/include/${_lib}" \
 		"${pkgdir}/usr/include/android/"
+
+
+	#  (TODO shouldn't we have something like android-dev package with includes?)
+
+	# utils Header files
+	cp -r "${srcdir}/platform_system_core-android-${pkgver}/include/utils" \
+		"${pkgdir}/usr/include/android/"
+
+	# Fix android/log.h exposed by NDK?
+	cp -r "${srcdir}/platform_system_core-android-${pkgver}/include/android/log.h" \
+		"${pkgdir}/usr/include/android/"
+
 }
 
 sha512sums="f84d31db61f86c73b8aecbaf788d43b0a2cc984121fd7244a2f7ca2a2a751437b8708acdd27cb86a260162e866c40f6015f14d52beb3a85e9ae2efd6f44b73f3  android_platform_system_core-7.0.0_r34.tar.gz
