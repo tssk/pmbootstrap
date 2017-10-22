@@ -36,7 +36,6 @@ package() {
 
 	# Protocol definitions for generator
 	make -C generator/proto
-	mkdir -p "$pkgdir/usr/lib/python2.7/proto"
 	for i in __init__.py nanopb_pb2.py plugin_pb2.py; do
 		echo "installing $i"
 		install -Dm755 "generator/proto/$i" "$pkgdir/usr/lib/python2.7/proto/$i"
