@@ -1,0 +1,22 @@
+--- a/include/binder/Parcel.h
++++ b/include/binder/Parcel.h
+@@ -20,6 +20,10 @@
+ #include <string>
+ #include <vector>
+
++#include <iostream>
++#include <memory>
++#include <limits>
++
+ #include <cutils/native_handle.h>
+ #include <nativehelper/ScopedFd.h>
+ #include <utils/Errors.h>
+@@ -27,7 +31,7 @@
+ #include <utils/String16.h>
+ #include <utils/Vector.h>
+ #include <utils/Flattenable.h>
+-#include <linux/binder.h>
++#include <linux/android/binder.h>
+
+ #include <binder/IInterface.h>
+ #include <binder/Parcelable.h>

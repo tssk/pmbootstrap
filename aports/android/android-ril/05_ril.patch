@@ -1,5 +1,14 @@
 --- a/libril/ril.cpp
 +++ b/libril/ril.cpp
+@@ -29,7 +29,7 @@
+ #include <binder/Parcel.h>
+ #include <cutils/jstring.h>
+ #include <sys/types.h>
+-#include <sys/limits.h>
++#include <limits.h>
+ #include <sys/system_properties.h>
+ #include <pwd.h>
+ #include <stdio.h>
 @@ -47,6 +47,7 @@
  #include <netinet/in.h>
  #include <cutils/properties.h>
