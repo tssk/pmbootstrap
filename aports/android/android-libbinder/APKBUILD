@@ -1,4 +1,4 @@
-pkgname=android-native
+pkgname=android-libbinder
 pkgver=7.0.0_r34
 pkgrel=0
 pkgdesc="android / platform / frameworks / native"
@@ -6,18 +6,33 @@ url="https://android.googlesource.com/platform/frameworks/native/"
 arch="all"
 license="APACHE2"
 depends=""
-makedepends=""
+makedepends="android-libcutils-dev"
 options="!check"
+
+# TODO I cannot find it on https://github.com/aosp-mirror
 source="
 	android_platform_frameworks_native-$pkgver.tar.gz::https://android.googlesource.com/platform/frameworks/native/+archive/9726a8d5cdb9508ec68449a494e6257201ae7576.tar.gz
+	Makefile
 	01_parcel.patch
 "
 subpackages="$pkgname-dev"
+
 builddir="$srcdir"
 
-package() {
+prepare() {
+	default_prepare
 
-	# TODO This is not right but I do not now how to unpack it to folder
+	cp "$srcdir"/Makefile "$builddir"/libs/binder/
+
+}
+
+build() {
+	msg "Building libbinder"
+	cd "$builddir/libs/binder"
+	make
+}
+
+package() {
 
 	mkdir -p "${pkgdir}/usr/include/android/"
 
@@ -28,4 +43,5 @@ package() {
 }
 
 sha512sums="4771ebf31abf9c7a6c2212379ebf8732fc6170ad321cc8bafbb299e3089ea6362b9eb25d5bd6e432ea250d52912992c59a0d2a26d4bb5227578f16a40a022c44  android_platform_frameworks_native-7.0.0_r34.tar.gz
+fcdb3a8d27b0fc7312c231ef1c616f7fae1d0d5c0663c578c26c121fc2d692916b1232c1d966b1ca848bc77765ec0789aa04544dc2459cdc66b703fbcc0f7dda  Makefile
 ab27f9346150ebc40ce9a15b882d4cac93e90ffa2709702ec88030294f7d89e2c85caeb4302a7455787d7686af9b02e7236dcc5de763c2611973999181241d87  01_parcel.patch"

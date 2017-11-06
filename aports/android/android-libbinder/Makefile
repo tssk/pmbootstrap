@@ -1,22 +1,21 @@
 CXX        := g++
 CXXFLAGS   := -std=c++14 -Wall -g -I../include -I/usr/include/android -I./
 LIBS       :=
-LDFLAGS = -L/usr/lib/android -llog
 
 SOURCES	:= ${wildcard *.cpp}
 OBJECTS	:= $(SOURCES:%.cpp=%.o)
 
-all: libril.so
+all: libbinder.so
 
 %.o: %.cpp
 	@echo CC $<
 	@$(CXX) -c -o $@ $< $(CXXFLAGS)
 
-libril.so: $(OBJECTS)
+libbinder.so: $(OBJECTS)
 	@echo LD $@
 	@$(CXX) -o $@ $^ $(CXXFLAGS) $(LIBS) $(LDFLAGS)
 
 .PHONY: clean
 
 clean:
-	-rm -fv *.o libril.so
+	-rm -fv *.o libbinder.so
